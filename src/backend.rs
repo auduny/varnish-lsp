@@ -57,8 +57,7 @@ impl Backend {
      * Gathers all defined identifiers across all documents loaded, and
      * then parses vmods either by vmod lib binary or vcc file
      *
-     * parse_vcc and parse_vmod both contains runtime assertions, so they
-     * are ran in their own threads.
+     * parse_vcc files are run concurrently via JoinSet.
      */
     /**
      * The scope (builtins, vmods, backends, subs, objects, ...) for a document.

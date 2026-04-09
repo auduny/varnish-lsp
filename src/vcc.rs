@@ -229,7 +229,8 @@ fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Ve
 
         let default_value: Option<String> = arg_toks
             .next_if(|tok| *tok == "=")
-            .map(|_| arg_toks.next().unwrap().to_string());
+            .and_then(|_| arg_toks.next())
+            .map(|tok| tok.to_string());
 
         // an argument of an unknown type (e.g. a vmod object type like «debug.exportable»)
         // still takes a position; it is just not type checked
@@ -313,13 +314,20 @@ pub fn parse_vcc(vcc_file: String) -> Type {
     // for each part, split by double newline (statements can span multiple lines)
     while let Some(s) = parts.next() {
         let mut lines_iter = s.split_terminator("\n\n");
-        let first_line = lines_iter.next().expect("No lines");
+        let Some(first_line) = lines_iter.next() else {
+            continue;
+        };
         // let tok_vec = tokenize(first_line, None, None);
         // let mut toks = tok_vec.iter().peekable().map(|tok| *tok);
         let mut toks = Tokenizer::new(first_line).peekable();
-        match toks.next().expect("No tokens") {
+        let Some(directive) = toks.next() else {
+            continue;
+        };
+        match directive {
             "Module" => {
-                scope.name = toks.next().unwrap().to_string();
+                if let Some(name) = toks.next() {
+                    scope.name = name.to_string();
+                }
             }
             "ABI" => {}
             "Restrict" => {}
@@ -358,7 +366,9 @@ pub fn parse_vcc(vcc_file: String) -> Type {
                 // take all following methods and put into obj
                 while let Some(ps) = parts.peek() {
                     let mut lines_iter = ps.split_terminator("\n\n");
-                    let first_line = lines_iter.next().unwrap();
+                    let Some(first_line) = lines_iter.next() else {
+                        break;
+                    };
                     // let tok_vec = tokenize(first_line, None, None);
                     // let mut toks = tok_vec.iter().peekable().map(|tok| *tok);
                     let mut toks = Tokenizer::new(first_line).peekable();
@@ -367,7 +377,9 @@ pub fn parse_vcc(vcc_file: String) -> Type {
                         Some("Method") => {}
                         // «$Restrict» right after «$Object» applies to the constructor
                         Some("Restrict") => {
-                            let part = parts.next().unwrap();
+                            let Some(part) = parts.next() else {
+                                break;
+                            };
                             let mut restrict_lines = part.split_terminator("\n\n");
                             restrict_lines.next();
                             if doc.is_empty() {

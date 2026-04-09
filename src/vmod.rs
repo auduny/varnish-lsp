@@ -334,7 +334,16 @@ pub async fn read_vmod_lib(
     // Offset in binary for symbol value
     let offset = (sec.sh_offset + (vmd_sym.st_value - sec.sh_addr)) as usize;
 
-    // Transmute a pointer to the offset in the file, into a pointer to a VmodDataCStruct
+    // Transmute a pointer to the offset in the file, into a pointer to a VmodDataCStruct.
+    // Safety: we verify the struct fits within the file buffer before dereferencing.
+    let struct_size = std::mem::size_of::<VmodDataCStruct>();
+    if offset.saturating_add(struct_size) > file.len() {
+        return Err(format!(
+            "VMOD struct at offset {offset} (size {struct_size}) extends past end of file ({})",
+            file.len()
+        )
+        .into());
+    }
     #[allow(invalid_reference_casting)]
     let vmd = unsafe { &*std::mem::transmute::<*const u8, *const VmodDataCStruct>(&file[offset]) };
 
@@ -363,7 +372,10 @@ pub async fn read_vmod_lib(
     let mut json: &str = resolve_cstr_ptr(json_file_offset, &file);
 
     if json.starts_with(VMOD_JSON_SPEC_STR) {
-        json = json[VMOD_JSON_SPEC_STR.len()..json.find('\u{3}').unwrap()].as_ref();
+        let end = json
+            .find('\u{3}')
+            .ok_or("VMOD JSON spec is missing end marker (U+0003)")?;
+        json = json[VMOD_JSON_SPEC_STR.len()..end].as_ref();
     }
 
     let vmod_json_data = parse_vmod_json(json)?;

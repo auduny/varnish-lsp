@@ -102,16 +102,27 @@ async fn main() -> ExitCode {
     let debug = cli.debug;
 
     if debug {
-        let _ = WriteLogger::init(
-            LevelFilter::Debug,
-            ConfigBuilder::new()
-                .add_filter_allow_str("varnishls")
-                .build(),
-            std::fs::File::create("varnishls.log").unwrap(),
-        );
+        match std::fs::File::create("varnishls.log") {
+            Ok(f) => {
+                let _ = WriteLogger::init(
+                    LevelFilter::Debug,
+                    ConfigBuilder::new()
+                        .add_filter_allow_str("varnishls")
+                        .build(),
+                    f,
+                );
+            }
+            Err(e) => eprintln!("Warning: could not create debug log file: {e}"),
+        }
     }
 
-    let cwd = std::env::current_dir().unwrap();
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Error: could not determine current directory: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let config = read_config(&cwd).await.unwrap_or_default();
 
     match cli.command {
@@ -314,10 +325,13 @@ async fn main() -> ExitCode {
             }
         }
         Command::InspectVcc { path } => {
-            let src = fs::read_to_string(&path).await.expect("Could not read VCC");
-
-            let scope = varnishls::vcc::parse_vcc(src);
-            println!("scope: {scope:?}");
+            match varnishls::vcc::parse_vcc_file_by_path(path.as_ref()) {
+                Ok(scope) => println!("scope: {scope:?}"),
+                Err(err) => {
+                    eprintln!("Failed to parse VCC: {err}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
         Command::Format {
             write,
@@ -328,15 +342,25 @@ async fn main() -> ExitCode {
             let now = std::time::Instant::now();
             let paths_len = paths.len();
             for path in paths {
-                let mut file = fs::File::options()
+                let mut file = match fs::File::options()
                     .read(true)
                     .write(write)
                     .open(&path)
                     .await
-                    .map_err(|err| panic!("Could not open VCL file {path:?}: {err:}"))
-                    .unwrap();
+                {
+                    Ok(f) => f,
+                    Err(err) => {
+                        eprintln!("Could not open VCL file {path:?}: {err}");
+                        exit_code = ExitCode::FAILURE;
+                        continue;
+                    }
+                };
                 let mut src: String = "".into();
-                file.read_to_string(&mut src).await.unwrap();
+                if let Err(err) = file.read_to_string(&mut src).await {
+                    eprintln!("Could not read VCL file {path:?}: {err}");
+                    exit_code = ExitCode::FAILURE;
+                    continue;
+                };
                 let src_hash = {
                     if validate {
                         let mut hasher = DefaultHasher::new();
@@ -355,9 +379,16 @@ async fn main() -> ExitCode {
                 };
 
                 if write {
-                    file.rewind().await.unwrap();
-                    file.set_len(0).await.unwrap();
-                    file.write_all(formatted.as_bytes()).await.expect("rip");
+                    if let Err(err) = file.rewind().await.and(file.set_len(0).await) {
+                        eprintln!("Could not truncate {path:?}: {err}");
+                        exit_code = ExitCode::FAILURE;
+                        continue;
+                    }
+                    if let Err(err) = file.write_all(formatted.as_bytes()).await {
+                        eprintln!("Could not write {path:?}: {err}");
+                        exit_code = ExitCode::FAILURE;
+                        continue;
+                    }
                 } else if validate {
                     let formatted_hash = {
                         let mut hasher = DefaultHasher::new();
