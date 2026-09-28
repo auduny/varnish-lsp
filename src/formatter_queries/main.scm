@@ -11,6 +11,7 @@
 [
     "="
     "+="
+    "-="
     "*="
     "/="
 ] @prepend_space @append_space

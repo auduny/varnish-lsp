@@ -207,7 +207,7 @@ module.exports = grammar({
             field('left', $.nested_ident),
             optional(
               seq(
-                field('operator', choice('=', '+=', '*=', '/=')), // new operators in 7.0
+                field('operator', choice('=', '+=', '-=', '*=', '/=')), // compound operators added in 7.0
                 field('right', choice($.expr, blank())),
               ),
             ),
