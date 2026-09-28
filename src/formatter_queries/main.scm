@@ -61,11 +61,11 @@
 (func_call_args "," @append_empty_softline) (#scope_id! "tuple")
 
 (binary_expression
-    operator: ["+" "-" "*" "/"] @append_indent_start
+    operator: ["+" "-" "*" "/" "%"] @append_indent_start
     right: (_) @append_indent_end
     (#scope_id! "big_maths")
 )
-(binary_expression operator: ["+" "-" "*" "/"] @append_empty_softline) (#scope_id! "big_maths")
+(binary_expression operator: ["+" "-" "*" "/" "%"] @append_empty_softline) (#scope_id! "big_maths")
 
 (binary_expression operator: _ @prepend_space @append_space)
 

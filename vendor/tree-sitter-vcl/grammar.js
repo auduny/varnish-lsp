@@ -57,7 +57,7 @@ module.exports = grammar({
         'acl',
         field('ident', $.ident),
         repeat($.acl_flag), // 7.0
-        field('body', seq('{', repeat($.acl_entry), '}')),
+        field('body', seq('{', repeat(choice($.acl_entry, $.include_declaration_with_semi)), '}')),
       ),
     // flags must follow the +/- sign immediately, see vcc_IsFlagRaw
     acl_flag: () =>
@@ -69,8 +69,8 @@ module.exports = grammar({
         'backend',
         field('ident', $.ident),
         choice(
-          field('body', seq('{', repeat($.backend_property), '}')),
-          seq('none', ';'),
+          field('body', seq('{', repeat(choice($.backend_property, $.include_declaration_with_semi)), '}')),
+          seq(choice('none', 'None'), ';'), // vcc_backend.c accepts both spellings
         ),
       ),
     probe_declaration: $ =>
@@ -82,7 +82,8 @@ module.exports = grammar({
     import_declaration: $ =>
       seq(
         'import',
-        field('ident', field('ident', $.ident)),
+        field('ident', $.ident),
+        optional(seq('as', field('alias', $.ident))),
         optional(seq('from', $.string)),
         ';',
       ),
@@ -175,7 +176,8 @@ module.exports = grammar({
         field('consequence', $.block),
       ),
     else_stmt: $ => seq('else', $.block),
-    call_stmt: $ => seq('call', field('ident', $.ident)), // subroutine call expr (e.g. «call strip_query_params;»)
+    // «call strip_query_params;» or a vmod function returning a SUB, «call obj.method();»
+    call_stmt: $ => seq('call', field('ident', choice($.ident_call_expr, $.ident))),
     ident_call_expr: $ =>
       prec(
         'call',
@@ -223,9 +225,20 @@ module.exports = grammar({
         $.parenthesized_expression,
         $.binary_expression,
         $.neg_expr,
+        $.member_expression,
         $.ident,
       ),
     parenthesized_expression: $ => seq('(', $.expr, ')'),
+    // attribute or method on a parenthesized expression, e.g. «(req.url + "x").lower()»
+    member_expression: $ =>
+      prec.left(
+        'member',
+        seq(
+          field('object', choice($.parenthesized_expression, $.member_expression)),
+          '.',
+          field('member', choice($.ident_call_expr, $.ident)),
+        ),
+      ),
 
     binary_expression: $ =>
       choice(
@@ -236,6 +249,7 @@ module.exports = grammar({
           ['-', 'binary_plus'],
           ['*', 'binary_times'],
           ['/', 'binary_times'],
+          ['%', 'binary_times'],
           ['<', 'binary_relation'],
           ['<=', 'binary_relation'],
           ['==', 'binary_equality'],
@@ -261,7 +275,9 @@ module.exports = grammar({
     add: () => choice('+', '-'),
     multiply: () => choice('*', '/'),
 
-    literal: $ => choice($.string, $.duration, $.bytes, $.number, $.bool),
+    literal: $ => choice($.string, $.duration, $.bytes, $.number, $.bool, $.blob),
+    // base64 BLOB literal, e.g. :aGVsbG8=:
+    blob: () => /:[A-Za-z0-9+\/=]*:/,
     string: () =>
       token(
         choice(
@@ -314,6 +330,11 @@ module.exports = grammar({
           'fetch',
           'ok',
           'vcl',
+          'connect',
+          // vcl_backend_refresh
+          'merge',
+          'beresp',
+          'obj_stale',
         ),
         optional(seq('(', optional(commaSep($.expr)), ')')),
       ),

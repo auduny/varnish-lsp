@@ -17,6 +17,8 @@
   "unset"
   "new"
   "call"
+  "as"
+  "from"
 ] @keyword
 
 [
@@ -33,6 +35,13 @@
   "abandon"
   "lookup"
   "ok"
+  "purge"
+  "fetch"
+  "error"
+  "connect"
+  "merge"
+  "beresp"
+  "obj_stale"
 ] @keyword
 
 [
@@ -50,6 +59,7 @@
   "-"
   "*"
   "/"
+  "%"
   "="
   "!"
 ] @operator
@@ -64,6 +74,7 @@
 (duration) @number
 (bytes) @number
 (bool) @number
+(blob) @string
 
 (ident) @variable
 (nested_ident) @property

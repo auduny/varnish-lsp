@@ -1,0 +1,118 @@
+==================
+import with alias, backend None, include in acl and backend
+==================
+
+import debug as dbg;
+import std from "/x.so";
+backend b None;
+backend c {
+	include "props.vcl";
+	.host = "x";
+}
+acl block {
+	include "${tmpdir}/_acl.vcl";
+	"10.0.0.0"/8;
+}
+
+---
+
+(source_file
+  (toplev_declaration
+    (import_declaration
+      (ident)
+      (ident)))
+  (toplev_declaration
+    (import_declaration
+      (ident)
+      (string)))
+  (toplev_declaration
+    (backend_declaration
+      (ident)))
+  (toplev_declaration
+    (backend_declaration
+      (ident)
+      (include_declaration_with_semi
+        (include_declaration
+          (string)))
+      (backend_property
+        (ident)
+        (literal
+          (string)))))
+  (toplev_declaration
+    (acl_declaration
+      (ident)
+      (include_declaration_with_semi
+        (include_declaration
+          (string)))
+      (acl_entry
+        (string)
+        (literal
+          (number))))))
+
+==================
+blob literal, modulus, call of vmod sub, member expression, new return actions
+==================
+
+sub vcl_backend_refresh {
+	set resp.body = :aGVsbG93b3JsZA==:;
+	set resp.http.residual = resp.status % 10000;
+	set resp.http.l-mod = (req.url + "bar").lower();
+	call c.xsub();
+	call strip;
+	return (merge);
+	return (beresp);
+	return (obj_stale);
+	return (connect);
+}
+
+---
+
+(source_file
+  (toplev_declaration
+    (sub_declaration
+      (ident)
+      (block
+        (stmt
+          (set_stmt
+            (nested_ident)
+            (literal
+              (blob))))
+        (stmt
+          (set_stmt
+            (nested_ident)
+            (binary_expression
+              (nested_ident)
+              (literal
+                (number)))))
+        (stmt
+          (set_stmt
+            (nested_ident)
+            (member_expression
+              (parenthesized_expression
+                (binary_expression
+                  (nested_ident)
+                  (literal
+                    (string))))
+              (ident_call_expr
+                (ident)
+                (func_call_args)))))
+        (stmt
+          (call_stmt
+            (ident_call_expr
+              (nested_ident)
+              (func_call_args))))
+        (stmt
+          (call_stmt
+            (ident)))
+        (stmt
+          (ret_stmt
+            (varnish_internal_return_methods)))
+        (stmt
+          (ret_stmt
+            (varnish_internal_return_methods)))
+        (stmt
+          (ret_stmt
+            (varnish_internal_return_methods)))
+        (stmt
+          (ret_stmt
+            (varnish_internal_return_methods)))))))
