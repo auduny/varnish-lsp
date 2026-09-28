@@ -71,6 +71,8 @@
 
 (COMMENT) @append_hardline @prepend_input_softline @multi_line_indent_all
 (acl_flag) @prepend_space
+["none" "None"] @prepend_space
+["as" "from"] @prepend_space @append_space
 (inline_c) @append_hardline @multi_line_indent_all @allow_blank_line_before
 ";" @append_space
 
