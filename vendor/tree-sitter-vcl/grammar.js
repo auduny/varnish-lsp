@@ -56,8 +56,12 @@ module.exports = grammar({
       seq(
         'acl',
         field('ident', $.ident),
+        repeat($.acl_flag), // 7.0
         field('body', seq('{', repeat($.acl_entry), '}')),
       ),
+    // flags must follow the +/- sign immediately, see vcc_IsFlagRaw
+    acl_flag: () =>
+      token(seq(choice('+', '-'), choice('log', 'fold', 'pedantic', 'table'))),
     sub_declaration: $ =>
       seq('sub', field('ident', $.ident), field('body', $.block)),
     backend_declaration: $ =>
@@ -122,14 +126,14 @@ module.exports = grammar({
           ),
         ),
       ),
+    // see vcc_acl_entry: [!] [(] [!] "addr" [/mask] [)] ;
     acl_entry: $ =>
       seq(
         optional('!'),
-        $.string,
-        repeat(choice('+log', '+table', '-pedantic')), // 7.0
-        optional(seq('/', $.literal)),
+        choice($._acl_address, seq('(', optional('!'), $._acl_address, ')')),
         ';',
       ),
+    _acl_address: $ => seq($.string, optional(seq('/', $.literal))),
     string_list: $ => repeat2($.string),
     inline_probe: $ => seq('{', repeat($.backend_property), '}'),
 

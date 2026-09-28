@@ -1,0 +1,53 @@
+==================
+acl with flags on the declaration
+==================
+
+acl foo +log -pedantic +table +fold {
+    "192.168.0.0"/16;
+    ! "10.0.0.1";
+    "localhost";
+}
+
+---
+
+(source_file
+  (toplev_declaration
+    (acl_declaration
+      (ident)
+      (acl_flag)
+      (acl_flag)
+      (acl_flag)
+      (acl_flag)
+      (acl_entry
+        (string)
+        (literal
+          (number)))
+      (acl_entry
+        (string))
+      (acl_entry
+        (string)))))
+
+==================
+acl with parenthesized entries
+==================
+
+acl foo {
+    ("192.168.0.0"/16);
+    ! ("10.0.0.1");
+    (! "::1");
+}
+
+---
+
+(source_file
+  (toplev_declaration
+    (acl_declaration
+      (ident)
+      (acl_entry
+        (string)
+        (literal
+          (number)))
+      (acl_entry
+        (string))
+      (acl_entry
+        (string)))))
