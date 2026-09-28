@@ -1,51 +1,108 @@
 const vclGrammar = require('../tree-sitter-vcl/grammar.js');
 
 /**
+ * Grammar for varnishtest / vtest2 test cases.
+ *
  * SEE: https://varnish-cache.org/docs/trunk/reference/vtc.html
+ * SEE: https://github.com/vtest/VTest2/blob/master/src/cmds.h
+ *
+ * The vtc tokenizer (vtc.c parse_string) is line oriented: a command runs to
+ * the end of the line unless the line ends with a backslash, and its
+ * arguments are whitespace separated words, "quoted strings" or {brace
+ * balanced blocks}. This grammar mirrors that: newlines terminate statements
+ * (they are skipped as whitespace anywhere else, e.g. inside embedded VCL).
  */
 
-const VTC_BLOCK_STATEMENTS = [
-  'rxreq',
-  'txresp',
-  'txreq',
-  'rxresp',
-  'txping',
-  'rxping',
-  'txprio',
-  'rxprio',
-  'txrst',
-  'rxrst',
-  'deplay',
-  'rxsettings',
-  'txsettings',
-  'rxwinup',
-  'txwinup',
+// bin/varnishtest/vtc_http.c CMD_HTTP(...)
+const HTTP_COMMANDS = [
   'accept',
-  'txgoaway',
-  'rxgoaway',
-  'tls_handshake',
-  'expect_close',
+  'close',
+  'send_n',
+  'send_urgent',
+  'sendhex',
+  'shutdown',
+  'timeout',
+  'fatal',
+  'non_fatal',
   'gunzip',
-
-  // tunnel statements
-  'pause',
-  'delay',
-  'resume',
+  'write_body',
+  'chunked',
+  'chunkedlen',
+  'rxchunk',
+  'settings',
+  'rxresp',
+  'rxrespbody',
+  'rxresphdrs',
+  'txpri',
+  'txreq',
+  'rxpri',
+  'rxreq',
+  'rxreqbody',
+  'rxreqhdrs',
+  'txresp',
+  'upgrade',
+  'expect_close',
+  'expect_pattern',
+  // Varnish Enterprise
+  'reset',
+  'unbrotli',
+  'tls_handshake',
+  'tls_renegotiate',
+  'tls_key_update',
 ];
+
+// bin/varnishtest/vtc_http2.c CMD_STREAM(...)
+const STREAM_COMMANDS = [
+  'rxcont',
+  'rxdata',
+  'rxframe',
+  'rxgoaway',
+  'rxhdrs',
+  'rxping',
+  'rxprio',
+  'rxpush',
+  'rxrst',
+  'rxsettings',
+  'rxwinup',
+  'txcont',
+  'txdata',
+  'txgoaway',
+  'txping',
+  'txprio',
+  'txpush',
+  'txrst',
+  'txsettings',
+  'txwinup',
+];
+
+const BLOCK_COMMANDS = [...new Set([...HTTP_COMMANDS, ...STREAM_COMMANDS])];
+
+const NL = choice('\n', '\r\n');
+
+// newline separated statements, blank lines allowed, last line may be
+// unterminated (end of file or directly followed by «}»)
+function lines(stmt) {
+  return seq(repeat(choice(NL, seq(stmt, NL))), optional(stmt));
+}
+
+function commandBlock(stmt) {
+  return seq('{', lines(stmt), '}');
+}
 
 module.exports = grammar(vclGrammar, {
   name: 'vtc',
 
-  extras: $ => [/\s/, $.COMMENT, $.inline_c, /\\\r?\n/],
-  conflicts: $ => [
-    [$.tls_config_statement]
-  ],
+  // line continuation gets precedence so a trailing «\» is never a word
+  extras: $ => [/\s/, $.COMMENT, $.inline_c, token(prec(1, /\\\r?\n/))],
 
   rules: {
-    COMMENT: () => token(seq('#', /.*/)),
-
-    source_file: $ => repeat($.vtc_statement),
+    source_file: $ => lines($.vtc_statement),
     source_file_vcl: $ => repeat1($.toplev_declaration),
+
+    // vtest2 accepts «delay .5»
+    number: () => /-?(\d+(\.\d+)?|\.\d+)/,
+
+    // bin/varnishtest/cmds.h CMD_GLOBAL(...) + CMD_TOP(...)
     vtc_statement: $ =>
       choice(
         $.varnishtest,
@@ -61,150 +118,247 @@ module.exports = grammar(vclGrammar, {
         $.logexpect,
         $.feature_statement,
         $.tunnel_block,
+        $.process,
+        $.filewrite,
+        $.include_statement,
+        $.vsm,
+        $.loop_statement,
+        // Varnish Enterprise
+        $.file,
+        $.dns,
+        $.iexpr,
+        $.unsetenv,
+        $.define,
       ),
-    feature_statement: $ => seq('feature', repeat1($.ident)), 
-    loop_statement: $ => seq(
-      'loop',
-      $.number,
-      field('block', seq('{', repeat($.vtc_block_statement), '}'))
-    ),
-    stream_block: $ => seq('stream', $.number, field('block', seq('{', repeat($.vtc_block_statement), '}')), repeat($.argument)),
-    vtc_block_statement: $ => choice($.vtc_block_statement_with_arguments, $.expect, $.tls_config, $.send, $.recv, $.barrier, $.loop_statement, $.delay, $.stream_block),
-    varnishtest: $ => seq(choice('varnishtest', 'vtest'), $.string),
+
+    /*
+     * argument values
+     */
+
+    // «-option»; defined before «word» so it wins ties in states where both are valid
+    argument_ident: () => /-[A-Za-z0-9_+-]+/,
+    // a bare word, may contain ${macros}
+    word: () => /([^\s"{}$\\]|\\[^\s]|\$(\{[^}]*\})?)+/,
+    // vtc strings cannot span lines, and «{"» must not start a VCL long string
+    _vtc_string: () => token(seq('"', /([^"\\\n$]|\\.|\$(\{[^}]*\})?)*/, '"')),
+    // brace balanced block of raw text (shell script, body, ...)
+    block_argument_value: $ =>
+      seq('{', repeat(choice($._raw_text, $.block_argument_value)), '}'),
+    _raw_text: () => token(prec(2, /[^{}]+/)),
+
+    _value: $ => choice($.word, alias($._vtc_string, $.string), $.block_argument_value),
+    _value_no_block: $ => choice($.word, alias($._vtc_string, $.string)),
+
+    // generic «-option [values...]»
+    argument: $ => prec.right(seq($.argument_ident, repeat($._value))),
+    // for commands where a «{» after the options starts a command block
+    argument_no_block: $ =>
+      prec.right(seq($.argument_ident, repeat($._value_no_block))),
+
+    /*
+     * top level commands
+     */
+
+    varnishtest: $ => seq(choice('varnishtest', 'vtest'), $._value),
+
     server: $ =>
       seq(
         'server',
-        $.ident,
-        repeat($.server_string_arguments),
-        optional(field('block', seq('{', repeat($.vtc_block_statement), '}'))), // Made block optional
-        repeat($.argument),
+        field('ident', $.ident),
+        repeat($.argument_no_block),
+        optional(seq(field('block', $._http_spec), repeat($.argument))),
       ),
     client: $ =>
       seq(
         'client',
-        $.ident,
-        repeat($.client_string_arguments),
-        optional(field('block', seq('{', repeat($.vtc_block_statement), '}'))),
-        repeat(choice($.argument)),
+        field('ident', $.ident),
+        repeat($.argument_no_block),
+        optional(seq(field('block', $._http_spec), repeat($.argument))),
       ),
-    tls_config: $ =>
+    _http_spec: $ => choice($.http_block, alias($._vtc_string, $.string)),
+    http_block: $ => commandBlock($.vtc_block_statement),
+
+    varnish: $ =>
       seq(
-        'tls_config',
-        optional(field('block', seq('{', repeat($.tls_config_statement), '}'))),
+        'varnish',
+        field('ident', $.ident),
+        // bare words allow macro-defined arguments, e.g. «varnish v1 ${m2_arg} ${m2_vcl}»
+        repeat(choice($.vcl_argument, $.errvcl_argument, $.argument, $.word)),
+      ),
+    vcl_argument: $ =>
+      seq(choice('-vcl', '-vcl+backend'), $._vcl_spec),
+    // -errvcl "expected error" { vcl }
+    errvcl_argument: $ =>
+      seq('-errvcl', field('message', $._value), $._vcl_spec),
+    _vcl_spec: $ =>
+      choice(
+        seq('{', optional($.source_file_vcl), '}'),
+        alias($._vtc_string, $.string),
+      ),
+
+    barrier: $ =>
+      seq(
+        'barrier',
+        field('ident', $.ident),
+        choice('cond', 'sock', 'sync'),
+        optional($.number),
+        optional('-cyclic'),
+      ),
+
+    haproxy: $ =>
+      seq(
+        'haproxy',
+        field('ident', $.ident),
+        repeat(choice($.haproxy_cli_argument, $.argument)),
+      ),
+    haproxy_cli_argument: $ =>
+      seq(
+        choice('-cli', '-mcli'),
+        commandBlock(choice($.send, $.expect_pattern_only, $.delay, $.barrier, $.shell)),
+      ),
+
+    syslog: $ =>
+      seq(
+        'syslog',
+        field('ident', $.ident),
+        repeat($.argument_no_block),
+        optional(seq(field('block', $.syslog_block), repeat($.argument))),
+      ),
+    syslog_block: $ =>
+      commandBlock(choice($.recv, $.expect_pattern_only, $.delay, $.barrier, $.shell)),
+
+    delay: $ => seq('delay', choice($.number, $.word)),
+    shell: $ => seq('shell', repeat($.shell_option), $._value, repeat($.argument)),
+    shell_option: $ =>
+      choice(
+        '-err',
+        seq('-exit', $._value_no_block),
+        seq(choice('-expect', '-match'), $._value),
+      ),
+    setenv: $ => seq('setenv', optional('-ifunset'), field('name', $.word), $._value_no_block),
+    process: $ =>
+      seq(
+        'process',
+        field('ident', $.ident),
+        optional(choice($.block_argument_value, alias($._vtc_string, $.string))),
         repeat($.argument),
       ),
+    filewrite: $ => seq('filewrite', optional('-a'), field('path', $._value_no_block), repeat($._value)),
+    include_statement: $ => seq('include', $._value_no_block),
+    vsm: $ => seq('vsm', field('ident', $.ident), repeat($.argument)),
+    feature_statement: $ => seq('feature', repeat1($._value)),
+
+    // Varnish Enterprise commands
+    file: $ => seq('file', field('ident', $.ident), repeat($.argument)),
+    dns: $ => seq('dns', repeat(choice($._value, $.argument))),
+    iexpr: $ => seq('iexpr', field('name', $.word), repeat1($._value)),
+    unsetenv: $ => seq('unsetenv', field('name', $.word)),
+    // define <macro> <name> <value>
+    define: $ => seq('define', field('macro', $.word), field('name', $.word), $._value),
+
+    // ${macro} used directly inside embedded VCL, e.g. «== ${s1_port}»
+    literal: ($, prev) => choice(prev, $.macro),
+    macro: () => /\$\{[^}]*\}/,
+
+    loop_statement: $ =>
+      seq('loop', choice($.number, $.word), field('block', choice(commandBlock($.vtc_statement), $.word))),
+
     tunnel_block: $ =>
       seq(
         'tunnel',
         field('ident', $.ident),
-        optional(field('block', seq('{', repeat($.vtc_block_statement), '}'))),
-        repeat($.argument),
+        repeat($.argument_no_block),
+        optional(seq(field('block', $.tunnel_body), repeat($.argument))),
       ),
-    varnish: $ =>
-      seq(
-        'varnish',
-        $.ident,
-        repeat(choice($.vcl_argument, $.expect_argument, $.argument)),
-      ),
-    barrier: $ => seq('barrier', $.ident, choice('cond', 'sock', 'sync'), optional($.number), optional('-cyclic')),
-    haproxy: $ => seq('haproxy', $.ident, repeat($.argument)),
-    syslog: $ => seq('syslog', $.ident, repeat($.argument)),
-    delay: $ => seq('delay', $.number),
-    setenv: $ => seq('setenv', optional('-ifunset'), $.ident, $.string),
+    tunnel_body: $ =>
+      commandBlock(choice($.tunnel_command, $.send, $.recv, $.delay, $.barrier, $.shell)),
+    tunnel_command: () => choice('pause', 'resume'),
 
-    // TODO:
-    shell: $ =>
-      seq(
-        choice('shell', 'process'),
-        repeat1(choice(prec(1, $.block_argument_value), $.argument)),
-      ),
-    // shell_block: () => seq('{', repeat(/[^\{\}]*(\{[^\}]*\})?/), '}'),
-    // shell_block: () =>
-    // seq('{', repeat1(choice(/[^${}]+/, seq('${', /[^\}]+/, '}'))), '}'),
-
-    vcl_argument: $ =>
-      seq(
-        '-vcl',
-        optional(token.immediate('+backend')),
-        '{',
-        $.source_file_vcl,
-        '}',
-      ),
-    expect_statement: $ =>
-      seq(
-        'expect',
-        optional('*'),
-        $.number,
-        $.ident,
-        $.string
-      ),
-    expect_argument: $ => seq('-expect', $.binary_expression),
-    // TODO: try to generalize -arg {str}
-    // body_argument: () => seq('-body', '{', /[^\}]+/, '}'),
-    req_argument: $ => seq('-req', choice(/[A-Z]+/, $.string)), // e.g. -req POST
-    number_arguments: $ => seq('-repeat', $.number),
-    client_string_arguments: $ => seq(choice('-connect', '-proxy1', '-proxy2'), choice($.string, $.variable, $.number)),
-    server_string_arguments: $ => seq(choice('-listen', '-dispatch', '-repeat'), choice($.string, $.variable, $.number)),
-
-    block_argument_value: () =>
-      seq('{', repeat1(choice(/[^${}]+/, seq('${', /[^\}]+/, '}'))), '}'),
-
-    // generic argument
-    argument_ident: () => /-\w+/,
-    argument: $ =>
-      prec.right(
-        2,
-        seq(
-          $.argument_ident,
-          optional(choice($.string, $.number, $.block_argument_value, $.ident)), // Added $.ident here
-        ),
-      ),
-
-    // general block statement with arguments
-    vtc_block_statement_with_arguments: $ =>
-      seq(
-        choice(...VTC_BLOCK_STATEMENTS),
-        repeat(choice($.req_argument, $.argument)),
-      ),
-    expect: $ => seq('expect', $.binary_expression),
-
-    // <undef> is valid in «expect req.http.null-header == <undef>»
-    literal: (_$, prev) => choice(prev, '<undef>'),
-
-    // _terminator: () => repeat1(\'\\\\n\'),
-
-    // Specific for values like "http/1.1", "example.com" that contain '.' or '/'
-    // and are not simple idents.
-    complex_config_value: () => token(prec(1, /[a-zA-Z0-9_.-]*[./][a-zA-Z0-9_./-]+/)),
-
-    config_value_item: $ => choice(
-      $.string,
-      $.variable,
-      $.tls_version,
-      $.complex_config_value, // For things like http/1.1
-      $.ident                 // For simple idents like h2, true, etc. (from VCL grammar)
-    ),
-
-    tls_config_statement: $ =>
-      seq(
-        $.ident,
-        '=',
-        repeat1($.config_value_item)
-      ),
-
-    variable: $ => seq('${', $.ident, '}'),
-    send: $ => seq('send', choice($.string, $.number)),
-    recv: $ => seq('recv', choice($.string, $.number)),
-    tls_version: $ => choice('TLSv1.0', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3'),
-    logexpect_expect: $ => seq('expect', /.*/),
     logexpect: $ =>
       seq(
         'logexpect',
-        $.ident,
-        (optional(seq('-v', $.ident))),
-        (optional(seq('-g', $.ident))),
-        optional(field('block', seq('{', repeat($.logexpect_expect), '}'))),
-        repeat(choice($.argument)),
+        field('ident', $.ident),
+        repeat(choice($.logexpect_query, $.argument_no_block)),
+        optional(seq(field('block', $.logexpect_block), repeat($.argument))),
       ),
+    // -q may take a {block}
+    logexpect_query: $ => seq('-q', $._value),
+    logexpect_block: $ =>
+      commandBlock(
+        choice($.logexpect_expect, $.logexpect_fail, $.logexpect_abort, $.logexpect_loop),
+      ),
+    // expect <skip> <vxid> <tag> [regex]
+    logexpect_expect: $ => seq('expect', repeat1($._value)),
+    logexpect_fail: $ => seq('fail', choice('clear', seq('add', repeat1($._value)))),
+    logexpect_abort: () => 'abort',
+    logexpect_loop: $ =>
+      seq('loop', choice($.number, $.word), choice(commandBlock(
+        choice($.logexpect_expect, $.logexpect_fail, $.logexpect_abort, $.logexpect_loop),
+      ), $.word)),
+
+    /*
+     * commands inside server/client/stream blocks
+     */
+
+    vtc_block_statement: $ =>
+      choice(
+        $.vtc_block_statement_with_arguments,
+        $.expect,
+        $.send,
+        $.recv,
+        $.barrier,
+        $.delay,
+        $.shell,
+        $.include_statement,
+        $.loop_block_statement,
+        $.stream_block,
+        $.tls_config,
+      ),
+    vtc_block_statement_with_arguments: $ =>
+      prec.right(seq(choice(...BLOCK_COMMANDS), repeat(choice($.argument, $._value)))),
+
+    send: $ => seq('send', $._value),
+    // syslog «recv» takes no argument
+    recv: $ => seq('recv', optional($._value)),
+
+    // expect <var> <op> <value>
+    expect: $ =>
+      seq(
+        'expect',
+        field('left', $.expect_value),
+        field('operator', $.expect_operator),
+        field('right', $.expect_value),
+      ),
+    // syslog / haproxy cli: expect <op> <value>
+    expect_pattern_only: $ =>
+      seq('expect', field('operator', $.expect_operator), field('right', $.expect_value)),
+    // bin/varnishtest/vtc_subr.c vtc_expect()
+    expect_operator: () =>
+      choice('==', '!=', '~', '!~', '<', '<=', '>', '>=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge'),
+    expect_value: $ =>
+      choice('<undef>', $.word, alias($._vtc_string, $.string), $.block_argument_value),
+
+    loop_block_statement: $ =>
+      seq('loop', choice($.number, $.word), field('block', choice(commandBlock($.vtc_block_statement), $.word))),
+
+    // h2: stream <id> { ... } -run
+    stream_block: $ =>
+      seq(
+        'stream',
+        choice($.number, $.word),
+        repeat($.argument_no_block),
+        optional(
+          seq(
+            field('block', choice(commandBlock($.vtc_block_statement), $.word)),
+            repeat($.argument),
+          ),
+        ),
+      ),
+
+    // Varnish Enterprise: tls_config { key = value ... }
+    tls_config: $ =>
+      seq('tls_config', commandBlock($.tls_config_statement), repeat($.argument)),
+    tls_config_statement: $ =>
+      seq(field('key', $.word), '=', repeat1($._value_no_block)),
   },
 });

@@ -1,0 +1,686 @@
+==================
+varnish with vcl+backend, options, continuation and expect
+==================
+
+varnishtest "Check that a cache fetch + hit transaction works"
+
+varnish v1 -arg "-p thread_pool_min=2" \
+	-vcl+backend { } -start
+
+varnish v1 -vcl {
+	backend default { .host = "${bad_ip}"; }
+	sub vcl_recv { if (std.port(server.ip) == ${s1_port}) { } }
+} -start
+
+varnish v2 -syntax 4.0 -errvcl {Compiled VCL version (4.0) not supported.} {
+	backend b None;
+}
+varnish v1 -errvcl "VCL compilation failed" "backend be none;"
+varnish v1 -cliok "param.set feature +http2"
+varnish v1 -cliok {ban req.url ~ "BAR"}
+varnish v1 -clierr 106 "param.set default_ttl -1"
+varnish v1 -expect sess_conn == 2
+varnish v1 -expect !MAIN.n_object
+
+---
+
+(source_file
+  (vtc_statement
+    (varnishtest
+      (string)))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (string))
+      (vcl_argument)
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (vcl_argument
+        (source_file_vcl
+          (toplev_declaration
+            (backend_declaration
+              (ident)
+              (backend_property
+                (ident)
+                (literal
+                  (string)))))
+          (toplev_declaration
+            (sub_declaration
+              (ident)
+              (block
+                (stmt
+                  (if_stmt
+                    (parenthesized_expression
+                      (binary_expression
+                        (ident_call_expr
+                          (nested_ident)
+                          (func_call_args
+                            (nested_ident)))
+                        (literal
+                          (macro))))
+                    (block))))))))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (word))
+      (errvcl_argument
+        (block_argument_value)
+        (source_file_vcl
+          (toplev_declaration
+            (backend_declaration
+              (ident)))))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (errvcl_argument
+        (string)
+        (string))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (string))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (block_argument_value))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (word)
+        (string))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (word)
+        (word)
+        (word))))
+  (vtc_statement
+    (varnish
+      (ident)
+      (argument
+        (argument_ident)
+        (word)))))
+
+==================
+global commands
+==================
+
+feature !workspace_emulator ipv6
+feature cmd {haproxy --version 2>&1 | grep -q 'HA-*Proxy version'}
+delay .2
+setenv -ifunset FOO ${tmpdir}/foo
+setenv BAR "bar baz"
+barrier b1 cond 2 -cyclic
+barrier b2 sock 3
+shell "echo 'vcl 4.0;' > ${tmpdir}/_b00014.vcl"
+shell -err -expect {Usage: varnishadm} \
+	"varnishadm -h"
+shell -match {^[	 ]*0\b} "wc -c ${tmpdir}/p1/stderr"
+shell -exit 1 -expect {varnishtest [options]} {varnishtest -h}
+shell {
+	cat >${tmpdir}/f <<-EOF
+	x = { y = 1; }
+	EOF
+} -run
+process p1 -winsz 100 200 {exec varnishlog -n ${v1_name} -g raw} -start
+process p1 "mkfs.mse -c ${tmpdir}/mse.conf" -expect-exit 0x1 -run
+process p1 -expect-text 0 0 "to launch" -writeln "q" -wait
+filewrite -a ${tmpdir}/foo "content"
+include ${tmpdir}/other.vtc
+vsm m1 -n ${v1_name} -attach
+loop 3 {
+	delay 1
+}
+loop 4 rxdata
+
+---
+
+(source_file
+  (vtc_statement
+    (feature_statement
+      (word)
+      (word)))
+  (vtc_statement
+    (feature_statement
+      (word)
+      (block_argument_value)))
+  (vtc_statement
+    (delay
+      (number)))
+  (vtc_statement
+    (setenv
+      (word)
+      (word)))
+  (vtc_statement
+    (setenv
+      (word)
+      (string)))
+  (vtc_statement
+    (barrier
+      (ident)
+      (number)))
+  (vtc_statement
+    (barrier
+      (ident)
+      (number)))
+  (vtc_statement
+    (shell
+      (string)))
+  (vtc_statement
+    (shell
+      (shell_option)
+      (shell_option
+        (block_argument_value))
+      (string)))
+  (vtc_statement
+    (shell
+      (shell_option
+        (block_argument_value))
+      (string)))
+  (vtc_statement
+    (shell
+      (shell_option
+        (word))
+      (shell_option
+        (block_argument_value))
+      (block_argument_value)))
+  (vtc_statement
+    (shell
+      (block_argument_value
+        (block_argument_value)
+        (block_argument_value))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (process
+      (ident)
+      (argument
+        (argument_ident)
+        (word)
+        (word)
+        (block_argument_value
+          (block_argument_value)))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (process
+      (ident)
+      (string)
+      (argument
+        (argument_ident)
+        (word))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (process
+      (ident)
+      (argument
+        (argument_ident)
+        (word)
+        (word)
+        (string))
+      (argument
+        (argument_ident)
+        (string))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (filewrite
+      (word)
+      (string)))
+  (vtc_statement
+    (include_statement
+      (word)))
+  (vtc_statement
+    (vsm
+      (ident)
+      (argument
+        (argument_ident)
+        (word))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (loop_statement
+      (number)
+      (vtc_statement
+        (delay
+          (number)))))
+  (vtc_statement
+    (loop_statement
+      (number)
+      (word))))
+
+==================
+server and client blocks
+==================
+
+server s1 -repeat 2 -listen "${tmpdir}/sock" {
+	rxreq
+	expect req.url == /foo
+	expect req.http.host == <undef>
+	expect req.url == {/'}
+	non_fatal
+	txresp -status 200 -hdr "Content-Type: text/plain" \
+		-hdr content-length "23" -bodylen 8
+	chunkedlen 10
+	sendhex "1f 8b 08"
+	close
+	accept
+	timeout 10
+	expect_close
+} -start
+
+server s2 "" -start
+
+client c1 -connect ${s1_sock} -proxy2 "${v1_addr}:1 2.2.2.2:2" {
+	txreq -req POST -url "/" -hdr "Host: foo" -body {{"json": 1}}
+	rxresp
+	expect resp.status == 200
+	expect resp.http.t1 -gt resp.http.t0
+	expect resp.body ~ "^abc"
+	barrier b1 sync
+	send "raw bytes"
+	recv 20
+	gunzip
+	txreq -url ${string,repeat,4,/123456789}
+} -run
+
+client c1 {
+	tls_config {
+		servername = example.com
+		pem-file = "${topsrc}/etc/ca/bundle/example.com.pem"
+	}
+	tls_handshake
+} -run
+
+---
+
+(source_file
+  (vtc_statement
+    (server
+      (ident)
+      (argument_no_block
+        (argument_ident)
+        (word))
+      (argument_no_block
+        (argument_ident)
+        (string))
+      (http_block
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments))
+        (vtc_block_statement
+          (expect
+            (expect_value
+              (word))
+            (expect_operator)
+            (expect_value
+              (word))))
+        (vtc_block_statement
+          (expect
+            (expect_value
+              (word))
+            (expect_operator)
+            (expect_value)))
+        (vtc_block_statement
+          (expect
+            (expect_value
+              (word))
+            (expect_operator)
+            (expect_value
+              (block_argument_value))))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments
+            (argument
+              (argument_ident)
+              (word))
+            (argument
+              (argument_ident)
+              (string))
+            (argument
+              (argument_ident)
+              (word)
+              (string))
+            (argument
+              (argument_ident)
+              (word))))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments
+            (word)))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments
+            (string)))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments
+            (word)))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments)))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (server
+      (ident)
+      (string)
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (client
+      (ident)
+      (argument_no_block
+        (argument_ident)
+        (word))
+      (argument_no_block
+        (argument_ident)
+        (string))
+      (http_block
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments
+            (argument
+              (argument_ident)
+              (word))
+            (argument
+              (argument_ident)
+              (string))
+            (argument
+              (argument_ident)
+              (string))
+            (argument
+              (argument_ident)
+              (block_argument_value
+                (block_argument_value)))))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments))
+        (vtc_block_statement
+          (expect
+            (expect_value
+              (word))
+            (expect_operator)
+            (expect_value
+              (word))))
+        (vtc_block_statement
+          (expect
+            (expect_value
+              (word))
+            (expect_operator)
+            (expect_value
+              (word))))
+        (vtc_block_statement
+          (expect
+            (expect_value
+              (word))
+            (expect_operator)
+            (expect_value
+              (string))))
+        (vtc_block_statement
+          (barrier
+            (ident)))
+        (vtc_block_statement
+          (send
+            (string)))
+        (vtc_block_statement
+          (recv
+            (word)))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments
+            (argument
+              (argument_ident)
+              (word)))))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (client
+      (ident)
+      (http_block
+        (vtc_block_statement
+          (tls_config
+            (tls_config_statement
+              (word)
+              (word))
+            (tls_config_statement
+              (word)
+              (string))))
+        (vtc_block_statement
+          (vtc_block_statement_with_arguments)))
+      (argument
+        (argument_ident)))))
+
+==================
+h2 streams
+==================
+
+client c1 {
+	stream 0 rxsettings -run
+	stream 1 -wait { txresp } -run
+	stream next {
+		txreq -url /foo \
+			-hdr :scheme http
+		rxresp
+		expect resp.status == 200
+		txdata -data "x" -nostrend
+		rxrst
+		expect rst.err == ENHANCE_YOUR_CALM
+	} -run
+} -run
+
+---
+
+(source_file
+  (vtc_statement
+    (client
+      (ident)
+      (http_block
+        (vtc_block_statement
+          (stream_block
+            (number)
+            (word)
+            (argument
+              (argument_ident))))
+        (vtc_block_statement
+          (stream_block
+            (number)
+            (argument_no_block
+              (argument_ident))
+            (vtc_block_statement
+              (vtc_block_statement_with_arguments))
+            (argument
+              (argument_ident))))
+        (vtc_block_statement
+          (stream_block
+            (word)
+            (vtc_block_statement
+              (vtc_block_statement_with_arguments
+                (argument
+                  (argument_ident)
+                  (word))
+                (argument
+                  (argument_ident)
+                  (word)
+                  (word))))
+            (vtc_block_statement
+              (vtc_block_statement_with_arguments))
+            (vtc_block_statement
+              (expect
+                (expect_value
+                  (word))
+                (expect_operator)
+                (expect_value
+                  (word))))
+            (vtc_block_statement
+              (vtc_block_statement_with_arguments
+                (argument
+                  (argument_ident)
+                  (string))
+                (argument
+                  (argument_ident))))
+            (vtc_block_statement
+              (vtc_block_statement_with_arguments))
+            (vtc_block_statement
+              (expect
+                (expect_value
+                  (word))
+                (expect_operator)
+                (expect_value
+                  (word))))
+            (argument
+              (argument_ident)))))
+      (argument
+        (argument_ident)))))
+
+==================
+logexpect, haproxy, syslog, tunnel
+==================
+
+logexpect l1 -v v1 -g vxid -q {ReqURL ~ "^/2"} -d 1 {
+	expect * 1001 ReqURL /foo
+	expect 0 = Begin
+	fail add * ReqHeader "x"
+	fail clear
+	loop 2 {
+		expect * * VCL_call
+	}
+	abort
+} -start
+
+logexpect l1 -wait
+
+haproxy h1 -conf {
+	defaults
+		mode http
+} -start
+
+haproxy h1 -cli {
+	send "show info"
+	expect ~ "Name: HAProxy"
+}
+
+syslog S1 -level notice {
+	recv
+	expect ~ "foo"
+} -start
+
+tunnel t1 -start+pause -connect "${s1_sock}" {
+	pause
+	send 10
+	recv 20
+	resume
+} -start
+
+---
+
+(source_file
+  (vtc_statement
+    (logexpect
+      (ident)
+      (argument_no_block
+        (argument_ident)
+        (word))
+      (argument_no_block
+        (argument_ident)
+        (word))
+      (logexpect_query
+        (block_argument_value))
+      (argument_no_block
+        (argument_ident)
+        (word))
+      (logexpect_block
+        (logexpect_expect
+          (word)
+          (word)
+          (word)
+          (word))
+        (logexpect_expect
+          (word)
+          (word)
+          (word))
+        (logexpect_fail
+          (word)
+          (word)
+          (string))
+        (logexpect_fail)
+        (logexpect_loop
+          (number)
+          (logexpect_expect
+            (word)
+            (word)
+            (word)))
+        (logexpect_abort))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (logexpect
+      (ident)
+      (argument_no_block
+        (argument_ident))))
+  (vtc_statement
+    (haproxy
+      (ident)
+      (argument
+        (argument_ident)
+        (block_argument_value))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (haproxy
+      (ident)
+      (haproxy_cli_argument
+        (send
+          (string))
+        (expect_pattern_only
+          (expect_operator)
+          (expect_value
+            (string))))))
+  (vtc_statement
+    (syslog
+      (ident)
+      (argument_no_block
+        (argument_ident)
+        (word))
+      (syslog_block
+        (recv)
+        (expect_pattern_only
+          (expect_operator)
+          (expect_value
+            (string))))
+      (argument
+        (argument_ident))))
+  (vtc_statement
+    (tunnel_block
+      (ident)
+      (argument_no_block
+        (argument_ident))
+      (argument_no_block
+        (argument_ident)
+        (string))
+      (tunnel_body
+        (tunnel_command)
+        (send
+          (word))
+        (recv
+          (word))
+        (tunnel_command))
+      (argument
+        (argument_ident)))))

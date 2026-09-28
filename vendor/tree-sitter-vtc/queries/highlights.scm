@@ -1,59 +1,70 @@
 ; inherits: vcl
 
+; top level commands (vtest2 cmds.h)
 [
   "varnishtest"
+  "vtest"
   "varnish"
   "client"
   "server"
-  "expect"
-  "rxreq"
-  "txreq"
-  "rxresp"
-  "txresp"
   "shell"
   "process"
   "setenv"
+  "unsetenv"
   "loop"
   "delay"
-  "accept"
   "feature"
-  "txsettings"
-  "rxgoaway"
-  "stream"
   "barrier"
   "haproxy"
   "syslog"
   "logexpect"
-  "tls_config"
-  "tls_handshake"
-  "recv"
+  "tunnel"
+  "filewrite"
+  "include"
+  "vsm"
+  "file"
+  "dns"
+  "iexpr"
+  "define"
+] @keyword
+
+; commands inside blocks
+[
+  "expect"
   "send"
-  "vtest"
+  "recv"
+  "stream"
+  "tls_config"
+  "fail"
+  "add"
+  "clear"
   "cond"
   "sock"
   "sync"
-  "deplay"
-  "expect_close"
-  "tunnel"
-  "pause"
-  "resume"
 ] @keyword
 
+(vtc_block_statement_with_arguments . _ @keyword)
+(tunnel_command) @keyword
+(logexpect_abort) @keyword
+
 "<undef>" @constant
+(expect_operator) @operator
+(macro) @variable
 
 [
-  "-connect"
-  "-proxy1"
-  "-proxy2"
-  "-listen"
-  "-dispatch"
-  "-repeat"
-  "-req"
   "-vcl"
-  "+backend"
+  "-vcl+backend"
+  "-errvcl"
+  "-cli"
+  "-mcli"
+  "-q"
+  "-err"
+  "-exit"
   "-expect"
+  "-match"
   "-ifunset"
   "-cyclic"
+  "-a"
 ] @parameter
 
 (argument_ident) @parameter
