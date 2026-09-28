@@ -1,12 +1,6 @@
-[
-    "{"
-    "C{"
-] @append_hardline @append_indent_start @prepend_space
+"{" @append_hardline @append_indent_start @prepend_space
 
-[
-    "}"
-    "}C"
-] @prepend_spaced_softline @prepend_indent_end
+"}" @prepend_spaced_softline @prepend_indent_end
 
 [
     "="

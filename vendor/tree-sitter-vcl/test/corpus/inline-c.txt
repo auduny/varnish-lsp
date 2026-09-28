@@ -1,0 +1,40 @@
+==================
+inline C at top level starting with a preprocessor line
+==================
+
+C{ #include <stdio.h> }C
+
+sub vcl_recv {
+    C{
+        #include <stdlib.h>
+    }C
+}
+
+---
+
+(source_file
+  (inline_c)
+  (toplev_declaration
+    (sub_declaration
+      (ident)
+      (block
+        (inline_c)))))
+
+==================
+inline C with nested braces and brace runs
+==================
+
+sub vcl_recv {
+    C{
+        if (a) { if (b) { c("}}"); } }
+    }C
+}
+
+---
+
+(source_file
+  (toplev_declaration
+    (sub_declaration
+      (ident)
+      (block
+        (inline_c)))))

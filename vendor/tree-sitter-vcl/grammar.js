@@ -12,7 +12,7 @@ module.exports = grammar({
 
   word: $ => $._word,
   extras: $ => [/\s+/, $.COMMENT, $.inline_c],
-  inline: $ => [$.expr, $.inline_c],
+  inline: $ => [$.expr],
 
   precedences: () => [
     [
@@ -334,12 +334,9 @@ module.exports = grammar({
         ')',
       ),
 
-    inline_c: _$ =>
-      seq(
-        'C{',
-        token(repeat1(choice(/[^{}]+/, seq('{', /[^\}]+/, '}')))),
-        '}C',
-      ),
+    // single token: everything up to the first «}C», like the VCL tokenizer.
+    // «}»-runs are allowed as long as they are not followed by «C».
+    inline_c: () => token(seq('C{', /([^}]|\}+[^}C])*\}*/, '}C')),
 
     _word: () => /[\w-]+/,
   },
