@@ -145,7 +145,7 @@ fn parse_doc(lines_iter: &mut SplitTerminator<&str>) -> String {
 }
 
 fn parse_type<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<Type> {
-    let type_str = toks.next().unwrap();
+    let type_str = toks.next()?;
     match type_str {
         "STRING" => Some(Type::String),
         "STRING_LIST" => Some(Type::String),
@@ -167,22 +167,18 @@ fn parse_type<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<
         "ENUM" => {
             let mut values = vec![];
 
-            assert_eq!(toks.next(), Some("{"), "expected enum values");
+            if toks.next_if(|tok| *tok == "{").is_none() {
+                // unknown ENUM form, treat as a plain enum without known values
+                return Some(Type::Enum(values));
+            }
             while let Some(tok) = toks.next() {
+                if tok == "}" {
+                    break;
+                }
                 values.push(tok.to_string());
                 match toks.next() {
-                    Some(",") => {
-                        continue;
-                    }
-                    Some("}") => {
-                        break;
-                    }
-                    Some(tok) => {
-                        panic!("unexpected token «{tok}». expected either «,» or «}}»");
-                    }
-                    _ => {
-                        panic!("unexpected end of enums");
-                    }
+                    Some(",") => continue,
+                    _ => break, // «}» or unexpected token / end of enums
                 }
             }
             Some(Type::Enum(values))
@@ -198,23 +194,24 @@ fn parse_type<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<
 fn parse_func<'a>(
     toks: &mut Peekable<impl Iterator<Item = &'a str>>,
     lines_iter: &mut SplitTerminator<&str>,
-) -> Func {
+) -> Option<Func> {
     let r#return = parse_type(toks).map(Box::new);
 
-    let name = toks.next().unwrap().trim_start_matches('.').to_string();
-    assert_eq!(toks.next(), Some("("), "expected arguments");
+    let name = toks.next()?.trim_start_matches('.').to_string();
+    if toks.next() != Some("(") {
+        return None; // expected arguments
+    }
 
     let args = parse_func_args(toks);
-    // assert_eq!(toks.next(), Some(")"), "expected end of arguments");
     let doc = parse_doc(lines_iter);
 
-    Func {
+    Some(Func {
         name,
         r#return,
         args,
         doc: Some(doc),
         ..Default::default()
-    }
+    })
 }
 
 fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Vec<FuncArg> {
@@ -241,12 +238,8 @@ fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Ve
             });
         }
 
-        if optional {
-            assert_eq!(
-                arg_toks.next(),
-                Some("]"),
-                "expected end of optional argument"
-            );
+        if optional && arg_toks.next() != Some("]") {
+            break; // expected end of optional argument
         }
 
         match arg_toks.peek() {
@@ -254,26 +247,43 @@ fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Ve
                 arg_toks.next();
                 continue;
             }
-            Some(&")") | None => break,
-            Some(tok) => panic!("unexpected token {tok:?}"),
+            _ => break, // «)», end of tokens, or something we do not understand
         }
     }
 
     args
 }
 
-fn check_restrict<'a>(parts: &mut Peekable<impl Iterator<Item = &'a str>>) -> Option<Vec<String>> {
+/**
+ * Parse a «$Restrict» directive following a function or method. Returns the
+ * restrictions and the documentation that follows the directive (the vcc
+ * documentation of a restricted function comes after its «$Restrict» line).
+ */
+fn check_restrict<'a>(
+    parts: &mut Peekable<impl Iterator<Item = &'a str>>,
+) -> Option<(Vec<String>, String)> {
     let next_part = parts.peek()?;
     if next_part.starts_with("Restrict ") {
-        Some(
-            parts.next().unwrap()["Restrict ".len()..]
-                .trim()
-                .split(char::is_whitespace)
-                .map(|str| str.to_string())
-                .collect(),
-        )
+        let part = parts.next().unwrap();
+        let mut lines_iter = part.split_terminator("\n\n");
+        let first = lines_iter.next().unwrap_or(part);
+        let line = first.lines().next().unwrap_or(first);
+        let restricted = line["Restrict ".len()..]
+            .split_whitespace()
+            .map(|str| str.to_string())
+            .collect();
+        Some((restricted, parse_doc(&mut lines_iter)))
     } else {
         None
+    }
+}
+
+fn apply_restrict<'a>(func: &mut Func, parts: &mut Peekable<impl Iterator<Item = &'a str>>) {
+    if let Some((restricted, doc)) = check_restrict(parts) {
+        func.restricted = Some(restricted);
+        if func.doc.as_deref().is_none_or(str::is_empty) {
+            func.doc = Some(doc);
+        }
     }
 }
 
@@ -308,15 +318,26 @@ pub fn parse_vcc(vcc_file: String) -> Type {
             "ABI" => {}
             "Restrict" => {}
             "Function" => {
-                let mut func = parse_func(&mut toks, &mut lines_iter);
-                func.restricted = check_restrict(&mut parts);
+                let Some(mut func) = parse_func(&mut toks, &mut lines_iter) else {
+                    continue;
+                };
+                apply_restrict(&mut func, &mut parts);
                 scope
                     .properties
                     .insert(func.name.to_owned(), Type::Func(func));
             }
             "Object" => {
-                let name = toks.next().expect("Expected Object name");
-                assert_eq!(toks.next(), Some("("), "expected arguments");
+                // $Object [NULL_OK] [EXPORT] name(args), flags come before the name
+                let mut name = None;
+                while let Some(tok) = toks.next() {
+                    if toks.peek() == Some(&"(") {
+                        name = Some(tok);
+                        break;
+                    }
+                }
+                let (Some(name), Some("(")) = (name, toks.next()) else {
+                    continue; // could not find «name(»
+                };
                 let args = parse_func_args(&mut toks);
                 let doc = parse_doc(&mut lines_iter);
                 let mut obj = Obj {
@@ -336,8 +357,10 @@ pub fn parse_vcc(vcc_file: String) -> Type {
                     }
 
                     parts.next();
-                    let mut func = parse_func(&mut toks, &mut lines_iter);
-                    func.restricted = check_restrict(&mut parts);
+                    let Some(mut func) = parse_func(&mut toks, &mut lines_iter) else {
+                        continue;
+                    };
+                    apply_restrict(&mut func, &mut parts);
                     obj.properties
                         .insert(func.name.to_owned(), Type::Func(func));
                 }
@@ -361,8 +384,9 @@ pub fn parse_vcc_file_by_path(
     vcc_path: &std::path::Path,
 ) -> Result<Type, Box<dyn std::error::Error + Send + Sync>> {
     let vcc_file = std::fs::read_to_string(vcc_path)?;
-    let vmod_scope = parse_vcc(vcc_file);
-    Ok(vmod_scope)
+    // parse_vcc should not panic, but a vcc file must never take vmod loading down
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_vcc(vcc_file)))
+        .map_err(|_| format!("panic while parsing {}", vcc_path.display()).into())
 }
 
 #[cfg(test)]
@@ -386,12 +410,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_object_with_flags_and_restrict() {
+        let src = "$Module stat 3 \"Stat\"\n\n$Function BACKEND backend_prometheus(PRIV_TASK, STRING filters = 0)\n$Restrict backend\n\nDocumentation about backend_prometheus.\n\n$Object NULL_OK event_observatory([STRING name], ENUM { skip, create } counter)\n\nObject doc.\n\n$Method VOID .increment(INT amount = 1)\n\nMethod doc.\n";
+        let Type::Obj(scope) = parse_vcc(src.to_string()) else {
+            panic!("expected object scope");
+        };
+        let Some(Type::Func(func)) = scope.properties.get("backend_prometheus") else {
+            panic!("backend_prometheus missing");
+        };
+        assert_eq!(func.restricted, Some(vec!["backend".to_string()]));
+        assert_eq!(func.doc.as_deref(), Some("Documentation about backend_prometheus."));
+        let Some(Type::Func(obj_func)) = scope.properties.get("event_observatory") else {
+            panic!("event_observatory missing");
+        };
+        let Some(Type::Obj(obj)) = obj_func.r#return.as_deref() else {
+            panic!("expected object return type");
+        };
+        assert!(obj.properties.contains_key("increment"));
+    }
+
+    #[test]
     fn test_parse_func() {
         let mut toks =
             Tokenizer::new("VOID barf(BOOL rainbow = false, ENUM { IN, OUT } direction = OUT)")
                 .peekable();
         let doc = "doc doc doc";
-        let func = parse_func(&mut toks, &mut doc.split_terminator("\n"));
+        let func = parse_func(&mut toks, &mut doc.split_terminator("\n")).unwrap();
         assert_eq!(func.name, "barf");
         assert_eq!(func.args.len(), 2);
         assert_eq!(func.args[0].name, Some("rainbow".into()));
