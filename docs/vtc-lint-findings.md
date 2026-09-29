@@ -70,7 +70,36 @@ find bin/varnishtest -name '*.vtc' | xargs -P 8 -I{} sh -c \
 tree-sitter parse FILE | grep -o 'errvcl_argument \[.*\]'
 ```
 
-## Suggested order of fixes
+## Results after the fixes (same run, same config)
+
+| | Before | After |
+|---|---|---|
+| Files with unexpected errors | 491 | 128 |
+| Unexpected errors | 2020 | 793 |
+| ... of which need `./lib` in `vcl_paths` (included VCL) | 773 | 773 |
+| ... other | 1247 | 20 |
+| Errors shown inside `-errvcl` blocks | 179 | 0 |
+
+The 20 remaining errors: 10 syntax errors in negative tests written outside
+`-errvcl`, 8 `b.encode is not a method` in m00043.vtc where `backend b` in
+the first `-vcl` block shadows `new b = blob.blob()` in a later block (needs
+per-block scoping), and 2 `debug.fill_synth` restriction errors that look
+genuine.
+
+Done in this round: sub-to-context table (and custom `vcl_*` subs are no
+longer treated as builtin), ENUM arguments, `-vcl+backend` generated
+backends, `$Restrict` after `$Object`, unknown vcc argument types keep their
+position, enterprise backend properties (booleans accept `true` and `1`),
+missing builtin variables, BLOB hashes, STRING to BOOL, `storage.<name>.*`,
+`param.<name>`, case insensitive `True`/`TRUE`, named argument names, the
+first definition of a name wins across `-vcl` blocks, and no diagnostics
+inside `-errvcl` blocks.
+
+Still open: per-`-vcl`-block scoping, and optionally honouring
+`param.set vcl_path` from `-cliok` lines so `include` inside tests resolves
+without configuration.
+
+## Suggested order of fixes (original)
 
 1. Sub-to-context table (215 errors, one table).
 2. ENUM arguments (~170 errors, one code path).
