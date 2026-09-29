@@ -117,8 +117,10 @@ impl Backend {
         definitions.properties.append(&mut vmod_scope.properties);
 
         // all objs (e.g. «new awdawd = new director.round_robin()»)
-        let mut temp_map: BTreeMap<String, Definition> = BTreeMap::from_iter(
-            documents_from_main_in_order
+        // the first definition wins: a vtc file has one program per «-vcl {}» block, so the
+        // same name is often defined once per block
+        let mut temp_map: BTreeMap<String, Definition> = BTreeMap::new();
+        for (name, def) in documents_from_main_in_order
                 .iter()
                 .flat_map(|doc_url| {
                     let mut cache_entry = self.cache.entry((*doc_url).clone()).or_default();
@@ -132,8 +134,10 @@ impl Backend {
                         })
                         .clone()
                 })
-                .map(|def| (def.ident_str.to_string(), def)),
-        );
+                .map(|def| (def.ident_str.to_string(), def))
+        {
+            temp_map.entry(name).or_insert(def);
+        }
 
         definitions.properties.append(&mut temp_map);
         debug!(

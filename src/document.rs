@@ -1,3 +1,4 @@
+use crate::varnish_builtins::builtin_sub_context;
 use crate::{
     config::LintConfig,
     parser,
@@ -367,6 +368,11 @@ impl Document {
             pub line: usize,
         }
         let mut varnishls_ignore: Option<VarnishlsIgnore> = None;
+        // argument nodes of ENUM parameters; their text is an enum value, not an identifier
+        let mut enum_arg_nodes: std::collections::HashSet<usize> = Default::default();
+        // vtc «-errvcl {...}» blocks contain VCL that is supposed to fail; no diagnostics there
+        let mut errvcl_range: Option<std::ops::Range<usize>> = None;
+
         loop {
             if (recurse && cursor.goto_first_child()) || cursor.goto_next_sibling() {
                 recurse = true;
@@ -378,6 +384,15 @@ impl Document {
             }
 
             let node = cursor.node();
+            if node.kind() == "errvcl_argument" {
+                errvcl_range = Some(node.byte_range());
+            }
+            if errvcl_range
+                .as_ref()
+                .is_some_and(|range| range.contains(&node.start_byte()))
+            {
+                continue;
+            }
             // the enclosing top level declaration (e.g. the sub we are in), looked up through
             // the ancestors so it is correct inside ERROR nodes and in VCL embedded in vtc files
             let toplev_node = {
@@ -823,12 +838,21 @@ impl Document {
                         if let Some(arg_type) = arg.r#type.as_ref() {
                             if let Type::Enum(enum_values) = arg_type {
                                 // validate enums
-                                if arg_value_node.kind() != "ident" {
+                                // an enum value is a bare word; «TRUE»/«FALSE» parse as bool literals
+                                let enum_node = if arg_value_node.kind() == "literal" {
+                                    arg_value_node.child(0).unwrap_or(arg_value_node)
+                                } else {
+                                    arg_value_node
+                                };
+                                if !matches!(enum_node.kind(), "ident" | "bool") {
                                     add_error!(node: arg_node, "Enum not found");
                                     continue;
                                 }
-                                let enum_value = get_node_text(&self.rope, &arg_value_node);
-                                if !enum_values.contains(&enum_value.to_string()) {
+                                enum_arg_nodes.insert(arg_value_node.id());
+                                // raw text: enum values may look like keywords (e.g. «backend», «new»)
+                                let enum_value =
+                                    self.rope.byte_slice(arg_value_node.byte_range()).to_string();
+                                if !enum_values.contains(&enum_value) {
                                     add_error!(
                                         node: arg_node,
                                         "Enum value {} not found. Must be one of: {}",
@@ -870,33 +894,28 @@ impl Document {
                             && let Some(ident_node) = toplev_node.child_by_field_name("ident")
                         {
                             let sub_name = &*get_node_text(&self.rope, &ident_node);
-                            if sub_name.starts_with("vcl_") {
-                                let mut search = vec![sub_name];
-                                let mapping = [
-                                    ("vcl_recv", "client"),
-                                    ("vcl_deliver", "client"),
-                                    ("vcl_backend_fetch", "backend"),
-                                    ("vcl_backend_response", "backend"),
-                                    ("vcl_init", "housekeeping"),
-                                    ("vcl_fini", "housekeeping"),
-                                ];
-
-                                mapping
+                            // only builtin subs have a known context; custom subs (even ones
+                            // named vcl_*) can be called from anywhere
+                            if let Some(context) = builtin_sub_context(sub_name)
+                                && !restricted
                                     .iter()
-                                    .filter(|(search_sub_name, _)| search_sub_name == &sub_name)
-                                    .for_each(|(_, alias)| search.push(alias));
-
-                                if !search
-                                    .iter()
-                                    .any(|search| restricted.contains(&search.to_string()))
-                                {
-                                    add_error!(node: node, "Cannnot be called from {sub_name}");
-                                }
+                                    .any(|allowed| allowed == sub_name || allowed == context)
+                            {
+                                add_error!(node: node, "Cannot be called from {sub_name}");
                             }
                         }
                     }
                 }
                 "nested_ident" | "ident" => {
+                    if enum_arg_nodes.contains(&node.id()) {
+                        continue;
+                    }
+                    // the name in «func(name = value)» may be anything, e.g. «acl = a1»
+                    if node.parent().is_some_and(|parent| parent.kind() == "func_call_named_arg")
+                        && node.prev_sibling().is_none()
+                    {
+                        continue;
+                    }
                     // manually get ident text without get_node_text here, to check for reserved
                     // keywords
                     let text = self.rope.byte_slice(node.byte_range()).to_string();
@@ -915,7 +934,7 @@ impl Document {
                         if let Some(ident_node) = toplev_node.child_by_field_name("ident") {
                             let sub_name = &*get_node_text(&self.rope, &ident_node);
                             let parts = text.split('.').collect::<Vec<&str>>();
-                            if sub_name.starts_with("vcl_") {
+                            if builtin_sub_context(sub_name).is_some() {
                                 let exists_in_sub = match parts[0] {
                                     "req" | "req_top" => matches!(
                                         sub_name,
@@ -928,6 +947,7 @@ impl Document {
                                             | "vcl_purge"
                                             | "vcl_pipe"
                                             | "vcl_hash"
+                                            | "vcl_connect"
                                     ),
                                     "bereq" => matches!(
                                         sub_name,
@@ -1242,6 +1262,46 @@ impl Document {
                 loc: Some(loc),
                 nested_pos,
             });
+        }
+
+        // in document order, so the first definition of a name is the earliest one
+        defs.sort_by(|a, b| a.nested_pos.cmp(&b.nested_pos));
+
+        // varnishtest «-vcl+backend» generates a backend for every «server sN» in the file
+        if matches!(self.filetype, FileType::Vtc)
+            && self.rope.to_string().contains("-vcl+backend")
+            && let Ok(q) = Query::new(
+                &self.ast.language(),
+                "(server ident: (ident) @ident) @node",
+            )
+        {
+            let node_capt_idx = q.capture_index_for_name("node").unwrap();
+            let ident_capt_idx = q.capture_index_for_name("ident").unwrap();
+            let mut qc = QueryCursor::new();
+            let mut all_matches = qc.matches(&q, self.ast.root_node(), self);
+            while let Some(each_match) = all_matches.next() {
+                let (Some(node_capture), Some(ident_capture)) = (
+                    each_match.captures.iter().find(|c| c.index == node_capt_idx),
+                    each_match.captures.iter().find(|c| c.index == ident_capt_idx),
+                ) else {
+                    continue;
+                };
+                let name = get_node_text(&self.rope, &ident_capture.node);
+                if defs.iter().any(|def| def.ident_str == name) {
+                    continue;
+                }
+                let mut nested_pos = self.pos_from_main_doc.clone();
+                nested_pos.push(point_to_tuple(node_capture.node.start_position()));
+                defs.push(Definition {
+                    ident_str: name,
+                    r#type: Box::new(Type::Backend),
+                    loc: Some(Location {
+                        uri: self.url.clone(),
+                        range: ts_range_to_lsp_range(node_capture.node.range()),
+                    }),
+                    nested_pos,
+                });
+            }
         }
 
         defs
