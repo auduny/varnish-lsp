@@ -219,6 +219,8 @@ fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Ve
     let mut args: Vec<FuncArg> = vec![];
     while arg_toks.peek().is_some() {
         let optional = arg_toks.next_if(|tok| *tok == "[").is_some();
+        // PRIV_* arguments are provided by varnish, not by the vcl caller
+        let is_priv = arg_toks.peek().is_some_and(|tok| tok.starts_with("PRIV_"));
         let r#type = parse_type(&mut arg_toks);
         let name = arg_toks
             .next_if(|tok| *tok != ",")
@@ -228,8 +230,9 @@ fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Ve
             .next_if(|tok| *tok == "=")
             .map(|_| arg_toks.next().unwrap().to_string());
 
-        // skip unrecognized types
-        if r#type.is_some() {
+        // an argument of an unknown type (e.g. a vmod object type like «debug.exportable»)
+        // still takes a position; it is just not type checked
+        if !is_priv {
             args.push(FuncArg {
                 name,
                 optional,
@@ -339,7 +342,7 @@ pub fn parse_vcc(vcc_file: String) -> Type {
                     continue; // could not find «name(»
                 };
                 let args = parse_func_args(&mut toks);
-                let doc = parse_doc(&mut lines_iter);
+                let mut doc = parse_doc(&mut lines_iter);
                 let mut obj = Obj {
                     name: name.to_string(),
                     ..Default::default()
@@ -352,8 +355,19 @@ pub fn parse_vcc(vcc_file: String) -> Type {
                     // let mut toks = tok_vec.iter().peekable().map(|tok| *tok);
                     let mut toks = Tokenizer::new(first_line).peekable();
 
-                    if toks.next() != Some("Method") {
-                        break;
+                    match toks.next() {
+                        Some("Method") => {}
+                        // «$Restrict» right after «$Object» applies to the constructor
+                        Some("Restrict") => {
+                            let part = parts.next().unwrap();
+                            let mut restrict_lines = part.split_terminator("\n\n");
+                            restrict_lines.next();
+                            if doc.is_empty() {
+                                doc = parse_doc(&mut restrict_lines);
+                            }
+                            continue;
+                        }
+                        _ => break,
                     }
 
                     parts.next();
@@ -411,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_parse_object_with_flags_and_restrict() {
-        let src = "$Module stat 3 \"Stat\"\n\n$Function BACKEND backend_prometheus(PRIV_TASK, STRING filters = 0)\n$Restrict backend\n\nDocumentation about backend_prometheus.\n\n$Object NULL_OK event_observatory([STRING name], ENUM { skip, create } counter)\n\nObject doc.\n\n$Method VOID .increment(INT amount = 1)\n\nMethod doc.\n";
+        let src = "$Module stat 3 \"Stat\"\n\n$Function BACKEND backend_prometheus(PRIV_TASK, STRING filters = 0)\n$Restrict backend\n\nDocumentation about backend_prometheus.\n\n$Object NULL_OK event_observatory([STRING name], ENUM { skip, create } counter)\n$Restrict vcl_init\n\nObject doc.\n\n$Method VOID .increment(INT amount = 1)\n\nMethod doc.\n";
         let Type::Obj(scope) = parse_vcc(src.to_string()) else {
             panic!("expected object scope");
         };
