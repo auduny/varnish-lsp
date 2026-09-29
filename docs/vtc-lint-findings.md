@@ -95,9 +95,21 @@ missing builtin variables, BLOB hashes, STRING to BOOL, `storage.<name>.*`,
 first definition of a name wins across `-vcl` blocks, and no diagnostics
 inside `-errvcl` blocks.
 
-Still open: per-`-vcl`-block scoping, and optionally honouring
-`param.set vcl_path` from `-cliok` lines so `include` inside tests resolves
-without configuration.
+## Results after the second round
+
+Per-`-vcl`-block scoping, `vcl_path` read from the vtc file itself, and the
+defined-after-use check limited to one document. Same 2496 files, config is
+only `vcc_paths = ["./lib"]`, no `vcl_paths`:
+
+| | Count |
+|---|---|
+| Files with errors | 7 |
+| Errors | 14 |
+
+The 14: 10 syntax errors in negative tests written outside `-errvcl`,
+2 `debug.fill_synth` restriction errors that look genuine, and 2 `math is
+undefined` (there is no libvmod_math in the repo). Nothing is open from
+the categorization.
 
 ## Suggested order of fixes (original)
 
