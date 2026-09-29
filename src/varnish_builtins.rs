@@ -113,6 +113,8 @@ impl Type {
             (matches!(self, Type::String) && matches!(other, Type::Number | Type::IP)) ||
             // number can cast into bool
             (matches!(self, Type::Number) && matches!(other, Type::Bool)) ||
+            // a string (e.g. a header) is a bool in vcl: set or not (vcc_expr_tobool)
+            (matches!(self, Type::String) && matches!(other, Type::Bool)) ||
             // match same type
             discriminant(self) == discriminant(other)
     }
@@ -180,10 +182,14 @@ impl Definitions {
             unreachable!("Failed to split identifier by period");
         };
         for ident in idents {
-            let Some(Type::Obj(obj)) = scope.get_type_property(ident) else {
-                return None;
-            };
-            scope = obj;
+            match scope.get_type_property(ident) {
+                Some(Type::Obj(obj)) => scope = obj,
+                // «beresp.backend.ip», «bereq.backend.name»
+                Some(Type::Backend) if matches!(*last_ident, "ip" | "name") => {
+                    return Some(&Type::String);
+                }
+                _ => return None,
+            }
         }
         scope.get_type_property(last_ident)
     }
@@ -270,6 +276,8 @@ pub struct Obj {
     pub read_only: bool,
     pub definition: Option<Definition>,
     pub is_http_headers: bool,
+    /// type of any property not in `properties`, e.g. «storage.<name>»
+    pub wildcard: Option<Box<Type>>,
 }
 
 impl HasTypeProperties for Obj {
@@ -283,7 +291,7 @@ impl HasTypeProperties for Obj {
         if self.is_http_headers {
             return Some(&Type::String);
         }
-        self.properties.get(ident)
+        self.properties.get(ident).or(self.wildcard.as_deref())
     }
     fn obj(&self) -> Option<&Obj> {
         Some(self)
@@ -380,7 +388,8 @@ pub fn get_probe_field_types<'a>() -> HashMap<&'a str, Type> {
         ("threshold", Type::Number),
         ("initial", Type::Number),
         // Varnish Plus
-        ("tcponly", Type::Number),
+        ("tcponly", Type::Bool),
+        ("expect_close", Type::Bool),
     ])
 }
 
@@ -397,7 +406,56 @@ pub const BACKEND_FIELDS: &[&str] = &[
     "probe",
     "max_connections",
     "proxy_header",
+    // 7.0
+    "via",
+    "preamble",
+    "authority",
+    // varnish enterprise (lib/libvcc/vcc_backend.c)
+    "ssl",
+    "ssl_sni",
+    "ssl_nosni",
+    "ssl_verify_peer",
+    "ssl_verify_host",
+    "ssl_noverify",
+    "tls",
+    "tls_sni",
+    "tls_verify_peer",
+    "tls_verify_host",
+    "certificate",
+    "wait_limit",
+    "wait_timeout",
+    "dscp",
+    "expect_close",
+    "tcponly",
 ];
+
+/// The builtin subroutines and the vcc «$Restrict» context they belong to.
+pub const BUILTIN_SUBS: &[(&str, &str)] = &[
+    ("vcl_recv", "client"),
+    ("vcl_pipe", "client"),
+    ("vcl_pass", "client"),
+    ("vcl_hash", "client"),
+    ("vcl_purge", "client"),
+    ("vcl_miss", "client"),
+    ("vcl_hit", "client"),
+    ("vcl_deliver", "client"),
+    ("vcl_synth", "client"),
+    ("vcl_connect", "client"), // varnish enterprise
+    ("vcl_backend_fetch", "backend"),
+    ("vcl_backend_response", "backend"),
+    ("vcl_backend_error", "backend"),
+    ("vcl_backend_refresh", "backend"),
+    ("vcl_init", "housekeeping"),
+    ("vcl_fini", "housekeeping"),
+];
+
+/// «client», «backend» or «housekeeping» for a builtin subroutine, None for custom subs
+pub fn builtin_sub_context(sub_name: &str) -> Option<&'static str> {
+    BUILTIN_SUBS
+        .iter()
+        .find(|(name, _)| *name == sub_name)
+        .map(|(_, context)| *context)
+}
 
 pub fn get_backend_field_types<'a>() -> HashMap<&'a str, Type> {
     HashMap::from([
@@ -417,11 +475,23 @@ pub fn get_backend_field_types<'a>() -> HashMap<&'a str, Type> {
         ("preamble", Type::Blob),
         ("authority", Type::String),
         // Varnish Enterprise (https://docs.varnish-software.com/varnish-enterprise/features/backend-ssl/)
-        ("ssl", Type::Number),
-        ("ssl_sni", Type::Number),
-        ("ssl_verify_peer", Type::Number),
-        ("ssl_verify_host", Type::Number),
+        // booleans, but «.ssl = 1» is accepted too (a number casts into a bool)
+        ("ssl", Type::Bool),
+        ("ssl_sni", Type::Bool),
+        ("ssl_nosni", Type::Bool),
+        ("ssl_verify_peer", Type::Bool),
+        ("ssl_verify_host", Type::Bool),
+        ("ssl_noverify", Type::Bool),
+        ("tls", Type::Bool),
+        ("tls_sni", Type::Bool),
+        ("tls_verify_peer", Type::Bool),
+        ("tls_verify_host", Type::Bool),
         ("certificate", Type::String),
+        ("wait_limit", Type::Number),
+        ("wait_timeout", Type::Duration),
+        ("dscp", Type::Number),
+        ("expect_close", Type::Bool),
+        ("tcponly", Type::Bool),
     ])
 }
 
@@ -461,7 +531,11 @@ pub fn get_varnish_builtins() -> Definitions {
             ("time".to_string(), Type::Time),
             ("trace".to_string(), Type::Bool),
             ("transport".to_string(), Type::String),
-            ("hash".to_string(), Type::String),
+            ("hash".to_string(), Type::Blob),
+            ("esi".to_string(), Type::Bool),
+            ("can_gzip".to_string(), Type::Bool),
+            ("hash_ignore_vary".to_string(), Type::Bool),
+            ("is_reset".to_string(), Type::Bool), // varnish enterprise
             ("hash_ignore_busy".to_string(), Type::Bool),
             ("hash_always_miss".to_string(), Type::Bool),
             ("hash_always_vary".to_string(), Type::Bool),
@@ -475,6 +549,8 @@ pub fn get_varnish_builtins() -> Definitions {
         name: "req_top".to_string(),
         read_only: true,
         properties: BTreeMap::from([
+            ("time".to_string(), Type::Time),
+            ("url".to_string(), Type::String),
             (
                 "http".to_string(),
                 Type::Obj(Obj {
@@ -514,12 +590,14 @@ pub fn get_varnish_builtins() -> Definitions {
             ("method".to_string(), Type::String),
             ("xid".to_string(), Type::String),
             ("retries".to_string(), Type::Number),
-            ("hash".to_string(), Type::String),
+            ("hash".to_string(), Type::Blob),
+            ("time".to_string(), Type::Time),
             ("proto".to_string(), Type::String),
             ("backend".to_string(), Type::Backend),
             ("uncacheable".to_string(), Type::Bool),
             ("is_bgfetch".to_string(), Type::Bool),
             ("is_hitmiss".to_string(), Type::Bool),
+            ("is_hitpass".to_string(), Type::Bool),
             ("body".to_string(), Type::Body),
             ("connect_timeout".to_string(), Type::Duration),
             ("first_byte_timeout".to_string(), Type::Duration),
@@ -551,6 +629,10 @@ pub fn get_varnish_builtins() -> Definitions {
             ("reason".to_string(), Type::String),
             ("backend".to_string(), Type::Backend),
             ("is_streaming".to_string(), Type::Bool),
+            ("proto".to_string(), Type::String),
+            ("time".to_string(), Type::Time),
+            ("do_esi".to_string(), Type::Bool),
+            ("filters".to_string(), Type::String),
             ("body".to_string(), Type::Body),
             // Varnish Enterprise (https://docs.varnish-software.com/varnish-enterprise/features/timeouts/)
             ("send_timeout".to_string(), Type::Duration),
@@ -590,8 +672,10 @@ pub fn get_varnish_builtins() -> Definitions {
             ("proto".to_string(), Type::String),
             ("reason".to_string(), Type::String),
             ("status".to_string(), Type::Number),
-            // ("storage".to_string(), Type::String),
+            ("storage".to_string(), Type::String), // This is really a Stevedore
             ("storage_hint".to_string(), Type::String),
+            ("time".to_string(), Type::Time),
+            ("filters".to_string(), Type::String),
             ("ttl".to_string(), Type::Duration),
             ("uncacheable".to_string(), Type::Bool),
             ("was_304".to_string(), Type::Bool),
@@ -610,6 +694,13 @@ pub fn get_varnish_builtins() -> Definitions {
             ("age".to_string(), Type::Duration),
             ("hits".to_string(), Type::Number),
             ("uncacheable".to_string(), Type::Bool),
+            ("time".to_string(), Type::Time),
+            ("storage".to_string(), Type::String),
+            ("can_esi".to_string(), Type::Bool),
+            ("xid".to_string(), Type::String),
+            ("status".to_string(), Type::Number),
+            ("reason".to_string(), Type::String),
+            ("proto".to_string(), Type::String),
             (
                 "http".to_string(),
                 Type::Obj(Obj {
@@ -747,6 +838,31 @@ pub fn get_varnish_builtins() -> Definitions {
         ..Func::default()
     });
 
+    // varnish enterprise: param.<name> reads a varnishd parameter
+    let param: Type = Type::Obj(Obj {
+        name: "param".to_string(),
+        read_only: true,
+        wildcard: Some(Box::new(Type::String)),
+        ..Obj::default()
+    });
+
+    // storage.<name>.free_space / used_space / happy
+    let storage: Type = Type::Obj(Obj {
+        name: "storage".to_string(),
+        read_only: true,
+        wildcard: Some(Box::new(Type::Obj(Obj {
+            name: "storage.<name>".to_string(),
+            read_only: true,
+            properties: BTreeMap::from([
+                ("free_space".to_string(), Type::Bytes),
+                ("used_space".to_string(), Type::Bytes),
+                ("happy".to_string(), Type::Bool),
+            ]),
+            ..Obj::default()
+        }))),
+        ..Obj::default()
+    });
+
     let now = Type::Time;
 
     Definitions {
@@ -769,6 +885,8 @@ pub fn get_varnish_builtins() -> Definitions {
             ("hash_data".into(), Definition::new_builtin("hash_data".into(), hash_data)),
             ("ban".into(),       Definition::new_builtin("ban".into(),       ban)),
             ("now".into(),       Definition::new_builtin("now".into(),       now)),
+            ("storage".into(),   Definition::new_builtin("storage".into(),   storage)),
+            ("param".into(),     Definition::new_builtin("param".into(),     param)),
         ]),
     }
 }
