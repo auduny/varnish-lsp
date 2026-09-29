@@ -87,6 +87,7 @@ impl Backend {
         };
         let in_block = |pos: &Position| block.is_some_and(|block| block.contains_position(pos));
         let in_no_block = |pos: &Position| !all_blocks.iter().any(|b| b.contains_position(pos));
+        let vcl_paths = self.vcl_search_paths(&config, src_doc_url).await;
 
         let documents_from_main_in_order = {
             let mut docs = vec![];
@@ -97,7 +98,7 @@ impl Backend {
                 let includes = get_all_documents_includes(
                     &self.document_map,
                     &self.cache,
-                    &config,
+                    &vcl_paths,
                     src_doc_url,
                 );
                 for include in includes {
@@ -112,16 +113,20 @@ impl Backend {
                         docs.append(&mut get_all_documents(
                             &self.document_map,
                             &self.cache,
-                            &config,
+                            &vcl_paths,
                             include_url,
                         ));
                     }
                 }
             } else if let Some(ref root_document_uri) = *self.root_document_uri.read().await {
-                docs =
-                    get_all_documents(&self.document_map, &self.cache, &config, root_document_uri);
+                docs = get_all_documents(
+                    &self.document_map,
+                    &self.cache,
+                    &vcl_paths,
+                    root_document_uri,
+                );
             } else if let Some(src_doc_url) = src_doc_url {
-                docs = get_all_documents(&self.document_map, &self.cache, &config, src_doc_url);
+                docs = get_all_documents(&self.document_map, &self.cache, &vcl_paths, src_doc_url);
             }
 
             // if this doc is not included from main vcl, just append it
@@ -213,6 +218,30 @@ impl Backend {
         definitions
     }
 
+    async fn root_path(&self) -> PathBuf {
+        self.root_uri
+            .read()
+            .await
+            .to_file_path()
+            .unwrap_or_else(|_| PathBuf::from("."))
+    }
+
+    /// The vcl search paths: the configured ones plus the «vcl_path» a vtc document sets
+    async fn vcl_search_paths(&self, config: &Config, doc_url: Option<&Url>) -> Vec<PathBuf> {
+        let mut paths = config.vcl_paths.clone();
+        if let Some(doc_url) = doc_url
+            && let Some(doc) = self.document_map.get(doc_url)
+        {
+            let root = self.root_path().await;
+            for path in doc.vtc_vcl_paths(&root) {
+                if !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    }
+
     /// One scope per «-vcl {}» block of a vtc document (plus one for the vtc statements
     /// outside the blocks); a single global scope for vcl documents.
     pub async fn scoped_definitions(&self, uri: &Url) -> Vec<(NodeFilter, Definitions)> {
@@ -279,12 +308,15 @@ impl Backend {
     pub async fn read_new_includes(&self, initial_includes: Vec<Include>) {
         debug!("read_new_includes()");
         let config = self.config.read().await;
+        let root = self.root_path().await;
+        // the configured vcl paths, plus the «vcl_path» set by vtc documents as they are read
+        let mut search_paths = config.vcl_paths.clone();
         let mut includes_to_process = VecDeque::from(initial_includes);
 
         while let Some(include) = includes_to_process.pop_front() {
             let mut include = include;
             if include.url.is_none() {
-                include = include.resolve(&config.vcl_paths);
+                include = include.resolve(&search_paths);
             }
 
             let Some(include_url) = include.url else {
@@ -294,6 +326,11 @@ impl Backend {
 
             let doc_already_exists = {
                 if let Some(doc) = self.document_map.get(&include_url) {
+                    for path in doc.vtc_vcl_paths(&root) {
+                        if !search_paths.contains(&path) {
+                            search_paths.push(path);
+                        }
+                    }
                     // Update nested_pos if it doesn't match
                     if doc.pos_from_main_doc != include.nested_pos {
                         drop(doc);
@@ -313,7 +350,7 @@ impl Backend {
             }
 
             let Some(include_uri) = self
-                .read_doc_from_path(include.path.as_path(), include.nested_pos)
+                .read_doc_from_path(include.path.as_path(), include.nested_pos, &search_paths)
                 .await
             else {
                 // error should already have been logged
@@ -323,13 +360,18 @@ impl Backend {
             let Some(included_doc) = self.document_map.get(&include_uri) else {
                 continue;
             };
+            for path in included_doc.vtc_vcl_paths(&root) {
+                if !search_paths.contains(&path) {
+                    search_paths.push(path);
+                }
+            }
 
             // Wipe cache for this nested doc and read includes.
             let mut cache_entry = CacheEntry::default();
             let nested_includes = included_doc
                 .get_includes()
                 .into_iter()
-                .map(|include| include.resolve(&config.vcl_paths))
+                .map(|include| include.resolve(&search_paths))
                 .collect::<Vec<_>>();
             cache_entry.includes = Some(nested_includes.clone());
             includes_to_process.append(&mut nested_includes.into());
@@ -338,9 +380,13 @@ impl Backend {
         debug!("reading includes doneski");
     }
 
-    async fn read_doc_from_path(&self, path: &Path, nested_pos: NestedPos) -> Option<Url> {
-        let config = self.config.read().await;
-        let Some(file_path) = config.vcl_paths.iter().find_map(|search_root_path| {
+    async fn read_doc_from_path(
+        &self,
+        path: &Path,
+        nested_pos: NestedPos,
+        search_paths: &[PathBuf],
+    ) -> Option<Url> {
+        let Some(file_path) = search_paths.iter().find_map(|search_root_path| {
             let search_path = search_root_path.join(path);
             if search_path.as_path().exists() {
                 Some(search_path)
@@ -433,7 +479,9 @@ impl LanguageServer for Backend {
                 let config = self.config.read().await;
                 if let Some(ref main_vcl_path) = config.main_vcl {
                     debug!("main_vcl_path: {main_vcl_path:?}");
-                    if let Some(main_vcl_url) = self.read_doc_from_path(main_vcl_path, vec![]).await
+                    if let Some(main_vcl_url) = self
+                        .read_doc_from_path(main_vcl_path, vec![], &config.vcl_paths)
+                        .await
                     {
                         *self.root_document_uri.write().await = Some(main_vcl_url.clone());
 
@@ -1108,7 +1156,7 @@ async fn read_all_vmods(imports: Vec<VmodImport>, config: &Config) -> Definition
 fn get_all_documents_includes(
     doc_map: &DocumentMap,
     cache: &DashMap<Url, CacheEntry>,
-    config: &Config,
+    vcl_paths: &[PathBuf],
     doc_uri: &Url,
 ) -> Vec<Include> {
     let mut entry = cache.entry(doc_uri.clone()).or_default();
@@ -1120,7 +1168,7 @@ fn get_all_documents_includes(
                 .map(|doc| {
                     doc.get_includes()
                         .into_iter()
-                        .map(|include| include.resolve(&config.vcl_paths))
+                        .map(|include| include.resolve(vcl_paths))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -1131,15 +1179,15 @@ fn get_all_documents_includes(
 fn get_all_documents(
     doc_map: &DocumentMap,
     cache: &DashMap<Url, CacheEntry>,
-    config: &Config,
+    vcl_paths: &[PathBuf],
     doc_uri: &Url,
 ) -> Vec<Url> {
-    let includes: Vec<Include> = get_all_documents_includes(doc_map, cache, config, doc_uri);
+    let includes: Vec<Include> = get_all_documents_includes(doc_map, cache, vcl_paths, doc_uri);
 
     let mut deep_includes = includes
         .iter()
         .filter_map(|include| include.url.as_ref())
-        .flat_map(|include_url| get_all_documents(doc_map, cache, config, include_url))
+        .flat_map(|include_url| get_all_documents(doc_map, cache, vcl_paths, include_url))
         .collect::<Vec<_>>();
 
     let mut docs = vec![doc_uri.clone()];

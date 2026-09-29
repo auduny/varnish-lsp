@@ -1185,6 +1185,37 @@ impl Document {
         blocks
     }
 
+    /// The directories varnishd searches for «include» according to the vtc file itself:
+    /// «param.set vcl_path X» in -cliok arguments or «-p vcl_path=X» in -arg arguments. Colon
+    /// separated lists are split. «${topsrc}» is the workspace root; entries with other macros
+    /// are skipped.
+    pub fn vtc_vcl_paths(&self, root: &std::path::Path) -> Vec<PathBuf> {
+        if !matches!(self.filetype, FileType::Vtc) {
+            return vec![];
+        }
+        let text = self.rope.to_string();
+        let mut paths = vec![];
+        for (idx, _) in text.match_indices("vcl_path") {
+            let rest = &text[idx + "vcl_path".len()..];
+            let rest = rest.trim_start_matches([' ', '\t', '=']);
+            let value: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+                .collect();
+            for entry in value.split(':').filter(|e| !e.is_empty()) {
+                let entry = entry.replace("${topsrc}", &root.to_string_lossy());
+                if entry.contains("${") {
+                    continue;
+                }
+                let path = root.join(entry);
+                if path.is_dir() && !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    }
+
     pub fn vcl_block_at(&self, point: Point) -> Option<VclBlock> {
         self.vcl_blocks()
             .into_iter()
