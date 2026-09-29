@@ -249,7 +249,18 @@ impl Backend {
             }
         };
 
-        let doc_url = Url::from_file_path(file_path).unwrap();
+        // vcl_paths may be relative (e.g. the default «./»); file URLs must be absolute
+        let file_path = tokio::fs::canonicalize(&file_path)
+            .await
+            .unwrap_or(file_path);
+        let Ok(doc_url) = Url::from_file_path(&file_path) else {
+            self.log_error(format!(
+                "Could not make a file URL out of {}",
+                file_path.to_string_lossy()
+            ))
+            .await;
+            return None;
+        };
         let doc = Document::new(doc_url.clone(), file, Some(nested_pos));
         self.document_map.insert(doc_url.clone(), doc);
         Some(doc_url)

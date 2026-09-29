@@ -367,9 +367,6 @@ impl Document {
             pub line: usize,
         }
         let mut varnishls_ignore: Option<VarnishlsIgnore> = None;
-        let mut toplev_node = self.ast.root_node();
-        let mut is_at_top = true;
-
         loop {
             if (recurse && cursor.goto_first_child()) || cursor.goto_next_sibling() {
                 recurse = true;
@@ -381,12 +378,29 @@ impl Document {
             }
 
             let node = cursor.node();
-            if node.kind() == "toplev_declaration" {
-                is_at_top = true;
-            } else if is_at_top {
-                toplev_node = node;
-                is_at_top = false;
-            }
+            // the enclosing top level declaration (e.g. the sub we are in), looked up through
+            // the ancestors so it is correct inside ERROR nodes and in VCL embedded in vtc files
+            let toplev_node = {
+                let mut n = node;
+                loop {
+                    if matches!(
+                        n.kind(),
+                        "sub_declaration"
+                            | "acl_declaration"
+                            | "backend_declaration"
+                            | "probe_declaration"
+                            | "import_declaration"
+                            | "vcl_version_declaration"
+                            | "include_declaration_with_semi"
+                    ) {
+                        break n;
+                    }
+                    match n.parent() {
+                        Some(parent) => n = parent,
+                        None => break self.ast.root_node(),
+                    }
+                }
+            };
 
             macro_rules! get_location {
                 (node: $node:expr) => {
