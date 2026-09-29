@@ -187,12 +187,31 @@ async fn main() -> ExitCode {
             debug!("doc count {}", backend.document_map.iter().count());
 
             let scope = backend
-                .get_all_definitions_across_all_documents(Some(&initial_include_uri))
+                .get_all_definitions_across_all_documents(Some(&initial_include_uri), None)
                 .await;
+            // one scope per «-vcl {}» block for vtc files
+            let scoped = backend.scoped_definitions(&initial_include_uri).await;
 
-            for doc in backend.document_map.iter() {
+            let doc_urls: Vec<Url> = backend
+                .document_map
+                .iter()
+                .map(|doc| doc.url.clone())
+                .collect();
+            for doc_url in doc_urls {
+                let Some(doc) = backend.document_map.get(&doc_url) else {
+                    continue;
+                };
                 let len_lines = doc.rope.len_lines();
-                let errors = doc.get_error_ranges(&scope, &config.lint);
+                let errors: Vec<_> = if doc_url == initial_include_uri {
+                    scoped
+                        .iter()
+                        .flat_map(|(filter, scope)| {
+                            doc.get_error_ranges_filtered(scope, &config.lint, filter)
+                        })
+                        .collect()
+                } else {
+                    doc.get_error_ranges(&scope, &config.lint)
+                };
                 for error in errors {
                     let Some(severity) = error.severity else {
                         continue;

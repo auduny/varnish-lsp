@@ -89,6 +89,45 @@ pub struct DiagnosticData {
 
 pub type NestedPos = Vec<(usize, usize)>;
 
+/// A «varnish vN -vcl { ... }» block in a vtc file. Each block is a separate VCL program with
+/// its own imports, backends, subs and objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VclBlock {
+    pub byte_range: std::ops::Range<usize>,
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+}
+
+impl VclBlock {
+    pub fn contains_pos(&self, row: usize, col: usize) -> bool {
+        (row, col) >= self.start && (row, col) <= self.end
+    }
+
+    pub fn contains_position(&self, pos: &Position) -> bool {
+        self.contains_pos(pos.line as usize, pos.character as usize)
+    }
+}
+
+/// Which nodes of a document diagnostics are produced for
+#[derive(Debug, Clone)]
+pub enum NodeFilter {
+    All,
+    /// nodes starting inside this byte range (one vcl block)
+    Within(std::ops::Range<usize>),
+    /// nodes starting outside all of these byte ranges (the vtc statements themselves)
+    OutsideAll(Vec<std::ops::Range<usize>>),
+}
+
+impl NodeFilter {
+    fn accepts(&self, byte: usize) -> bool {
+        match self {
+            NodeFilter::All => true,
+            NodeFilter::Within(range) => range.contains(&byte),
+            NodeFilter::OutsideAll(ranges) => !ranges.iter().any(|range| range.contains(&byte)),
+        }
+    }
+}
+
 // Reserved keywords: words you can't name e.g. a backend, subroutine etc.
 const RESERVED_KEYWORDS: &[&str] = &[
     "if", "set", "new", "call", "else", "elsif", "unset", "include", "return", "sub", "acl",
@@ -360,6 +399,15 @@ impl Document {
         global_scope: &Definitions,
         config: &LintConfig,
     ) -> Vec<LintError> {
+        self.get_error_ranges_filtered(global_scope, config, &NodeFilter::All)
+    }
+
+    pub fn get_error_ranges_filtered(
+        &self,
+        global_scope: &Definitions,
+        config: &LintConfig,
+        filter: &NodeFilter,
+    ) -> Vec<LintError> {
         debug!("get_error_ranges start");
         let mut cursor = self.ast.walk();
         let mut error_ranges = Vec::new();
@@ -391,6 +439,9 @@ impl Document {
                 .as_ref()
                 .is_some_and(|range| range.contains(&node.start_byte()))
             {
+                continue;
+            }
+            if !filter.accepts(node.start_byte()) {
                 continue;
             }
             // the enclosing top level declaration (e.g. the sub we are in), looked up through
@@ -738,11 +789,16 @@ impl Document {
                         continue;
                     };
 
-                    // check it is defined above current line
-                    let mut call_nested_pos = self.pos_from_main_doc.clone();
-                    call_nested_pos.push(point_to_tuple(node.start_position()));
+                    // check it is defined above the current line. Only within the same
+                    // document: the include order of other documents depends on which
+                    // «-vcl {}» block or include chain loaded them, and is not reliable.
+                    let node_pos = ts_range_to_lsp_range(node.range()).start;
+                    let defined_below = definition
+                        .loc
+                        .as_ref()
+                        .is_some_and(|loc| loc.uri == self.url && loc.range.start > node_pos);
 
-                    if definition.nested_pos.gt(&call_nested_pos) {
+                    if defined_below {
                         let line = definition.loc.as_ref().unwrap().range.start.line;
                         let filename = definition
                             .loc
@@ -1076,12 +1132,22 @@ impl Document {
         global_scope: Definitions,
         lint_config: &LintConfig,
     ) -> Vec<Diagnostic> {
+        self.diagnostics_scoped(&[(NodeFilter::All, global_scope)], lint_config)
+    }
+
+    /// Diagnostics with one scope per node filter, e.g. one scope per «-vcl {}» block of a vtc
+    pub fn diagnostics_scoped(
+        &self,
+        scopes: &[(NodeFilter, Definitions)],
+        lint_config: &LintConfig,
+    ) -> Vec<Diagnostic> {
         if !lint_config.enabled {
             return vec![];
         }
 
-        self.get_error_ranges(&global_scope, lint_config)
+        scopes
             .iter()
+            .flat_map(|(filter, scope)| self.get_error_ranges_filtered(scope, lint_config, filter))
             .map(|lint_error| Diagnostic {
                 range: lint_error.loc.range,
                 severity: lint_error.severity,
@@ -1093,6 +1159,36 @@ impl Document {
                 ..Diagnostic::default()
             })
             .collect()
+    }
+
+    /// The «-vcl { ... }» blocks of a vtc file, in document order. Empty for vcl files.
+    pub fn vcl_blocks(&self) -> Vec<VclBlock> {
+        if !matches!(self.filetype, FileType::Vtc) {
+            return vec![];
+        }
+        let Ok(q) = Query::new(&self.ast.language(), "(source_file_vcl) @block") else {
+            return vec![];
+        };
+        let mut qc = QueryCursor::new();
+        let mut all_matches = qc.matches(&q, self.ast.root_node(), self);
+        let mut blocks = vec![];
+        while let Some(each_match) = all_matches.next() {
+            for capture in each_match.captures {
+                let node = capture.node;
+                blocks.push(VclBlock {
+                    byte_range: node.byte_range(),
+                    start: point_to_tuple(node.start_position()),
+                    end: point_to_tuple(node.end_position()),
+                });
+            }
+        }
+        blocks
+    }
+
+    pub fn vcl_block_at(&self, point: Point) -> Option<VclBlock> {
+        self.vcl_blocks()
+            .into_iter()
+            .find(|block| block.contains_pos(point.row, point.column))
     }
 
     pub fn get_vmod_imports(&self) -> Vec<VmodImport> {
@@ -1286,10 +1382,8 @@ impl Document {
                 ) else {
                     continue;
                 };
+                // the backend is defined for every block, even if one block declares its own
                 let name = get_node_text(&self.rope, &ident_capture.node);
-                if defs.iter().any(|def| def.ident_str == name) {
-                    continue;
-                }
                 let mut nested_pos = self.pos_from_main_doc.clone();
                 nested_pos.push(point_to_tuple(node_capture.node.start_position()));
                 defs.push(Definition {
