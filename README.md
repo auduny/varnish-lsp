@@ -107,7 +107,7 @@ You can add `.varnishls.toml` in the root of your workspace and add overrides an
 # .varnishls.toml in your workspace dir
 main_vcl = "vg/varnish.vcl" # path to the main vcl file varnish uses
 vmod_paths = ["/usr/lib/varnish-plus/vmods/"] # paths to directories containing your vmods (.so binaries)
-vcc_paths = ["/usr/src/varnish-cache/lib/"] # paths to directories containing vcc files (vmod definition files)
+vcc_paths = ["/usr/src/varnish-cache/lib/"] # paths to directories containing vcc files (vmod definition files), searched recursively
 vcl_paths = ["./", "/usr/share/varnish-plus/vcl/"] # paths to directories containing vcl (default ./)
 [lint]
 enabled = true

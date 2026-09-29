@@ -815,6 +815,75 @@ pub async fn read_config(root_path: &Path) -> Result<Config> {
     Ok(config)
 }
 
+/// How deep below a `vcc_paths` entry we look for vcc files (e.g. lib/varnish-modules/vmod_x.vcc)
+const VCC_SEARCH_MAX_DEPTH: usize = 4;
+
+/**
+ * Find the vcc file for a vmod below a `vcc_paths` entry.
+ *
+ * The conventional locations are tried first (an installed vcc dir, or a varnish source
+ * tree with lib/libvmod_<name>/vmod_<name>.vcc). If none matches, the directory is walked
+ * recursively so vcc files in other layouts, such as lib/varnish-modules/vmod_<name>.vcc,
+ * are found as well.
+ */
+fn find_vcc_file(vcc_path: &Path, vmod_name: &str) -> Option<PathBuf> {
+    let file_names = [
+        format!("vmod_{vmod_name}.vcc"),
+        format!("libvmod_{vmod_name}.vcc"),
+    ];
+    let lib_dir = format!("libvmod_{vmod_name}");
+
+    let candidates = [
+        vcc_path.join(&file_names[1]),
+        vcc_path.join(&file_names[0]),
+        vcc_path.join(&lib_dir).join("vmod.vcc"),
+        vcc_path.join(&lib_dir).join(&file_names[0]),
+    ];
+    if let Some(found) = candidates.into_iter().find(|path| match path.try_exists() {
+        Err(err) => {
+            error!("Could not check {} due to {}", path.display(), err);
+            false
+        }
+        Ok(exists) => exists,
+    }) {
+        return Some(found);
+    }
+
+    fn walk(dir: &Path, depth: usize, file_names: &[String], lib_dir: &str) -> Option<PathBuf> {
+        let mut subdirs = vec![];
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if path.is_dir() {
+                if name == lib_dir && path.join("vmod.vcc").is_file() {
+                    return Some(path.join("vmod.vcc"));
+                }
+                // skip hidden dirs (.git, .claude, ...) and build output
+                if !name.starts_with('.') && !matches!(name, "target" | "node_modules") {
+                    subdirs.push(path);
+                }
+            } else if file_names.iter().any(|f| f == name) {
+                return Some(path);
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        subdirs.sort();
+        subdirs
+            .iter()
+            .find_map(|subdir| walk(subdir, depth - 1, file_names, lib_dir))
+    }
+
+    let found = walk(vcc_path, VCC_SEARCH_MAX_DEPTH, &file_names, &lib_dir);
+    if let Some(ref path) = found {
+        debug!("found vcc for {vmod_name} by walking {}: {}", vcc_path.display(), path.display());
+    }
+    found
+}
+
 async fn read_all_vmods(imports: Vec<VmodImport>, config: &Config) -> Definitions {
     let mut definitions = Definitions::default();
 
@@ -830,30 +899,7 @@ async fn read_all_vmods(imports: Vec<VmodImport>, config: &Config) -> Definition
             config
                 .vcc_paths
                 .iter()
-                .find_map(|vcc_path| -> Option<PathBuf> {
-                    let vmod_name = &import.name;
-                    vec![
-                        vcc_path.join(format!("libvmod_{vmod_name}.vcc")),
-                        vcc_path.join(format!("vmod_{vmod_name}.vcc")),
-                        vcc_path
-                            .join(format!("libvmod_{vmod_name}"))
-                            .join("vmod.vcc"),
-                        vcc_path
-                            .join(format!("libvmod_{vmod_name}"))
-                            .join(format!("vmod_{vmod_name}.vcc")),
-                    ]
-                    .into_iter()
-                    .find(|path| {
-                        let path = Path::new(path);
-                        match path.try_exists() {
-                            Err(err) => {
-                                error!("Could not check {} due to {}", path.display(), err);
-                                false
-                            }
-                            Ok(exists) => exists,
-                        }
-                    })
-                })
+                .find_map(|vcc_path| find_vcc_file(vcc_path, &import.name))
         })
         .collect();
 
