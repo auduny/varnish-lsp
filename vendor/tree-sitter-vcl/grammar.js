@@ -283,8 +283,9 @@ module.exports = grammar({
         choice(
           // triple-quoted multiline strings
           seq('"""', /"*(([^"]+?")+?")+?"/),
-          // normal strings (not multiline)
-          seq('"', /([^\"\u000A\u000D]*(\\"|\\)?)*/, '"'),
+          // normal strings (not multiline). VCL has no escape sequences: a «"»
+          // always terminates the string (vcc_token.c)
+          seq('"', /[^"\r\n]*/, '"'),
           // multiline strings encapsulated with curly braces
           seq('{"', /[^"]*"+([^}"][^"]*"+)*/, '}'),
         ),
