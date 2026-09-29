@@ -271,7 +271,8 @@ module.exports = grammar({
       ),
     neg_expr: $ => prec.left(seq('!', $.expr)),
 
-    bool: () => choice('true', 'false'),
+    // vcc symbol lookup is case insensitive, so «True» and «TRUE» are valid too
+    bool: () => choice(/[Tt][Rr][Uu][Ee]/, /[Ff][Aa][Ll][Ss][Ee]/),
     add: () => choice('+', '-'),
     multiply: () => choice('*', '/'),
 
