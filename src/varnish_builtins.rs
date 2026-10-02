@@ -188,7 +188,9 @@ impl Definitions {
                 Some(Type::Backend) if matches!(*last_ident, "ip" | "name") => {
                     return Some(&Type::String);
                 }
-                _ => return None,
+                // methods on plain types, e.g. «req.url.lower()»
+                Some(other) => return type_method(other, last_ident),
+                None => return None,
             }
         }
         scope.get_type_property(last_ident)
@@ -429,6 +431,30 @@ pub const BACKEND_FIELDS: &[&str] = &[
     "tcponly",
 ];
 
+static STRING_METHOD: std::sync::LazyLock<Type> = std::sync::LazyLock::new(|| {
+    Type::Func(Func {
+        name: "lower".to_string(),
+        r#return: Some(Box::new(Type::String)),
+        ..Default::default()
+    })
+});
+static BACKEND_RESOLVE: std::sync::LazyLock<Type> = std::sync::LazyLock::new(|| {
+    Type::Func(Func {
+        name: "resolve".to_string(),
+        r#return: Some(Box::new(Type::Backend)),
+        ..Default::default()
+    })
+});
+
+/// Methods on plain vcl types (vcc_expr.c: Expr5 [ '.' (type_attribute | type_method()) ]*)
+pub fn type_method(r#type: &Type, name: &str) -> Option<&'static Type> {
+    match (r#type, name) {
+        (Type::String, "lower" | "upper") => Some(&STRING_METHOD),
+        (Type::Backend, "resolve") => Some(&BACKEND_RESOLVE),
+        _ => None,
+    }
+}
+
 /// The builtin subroutines and the vcc «$Restrict» context they belong to.
 pub const BUILTIN_SUBS: &[(&str, &str)] = &[
     ("vcl_recv", "client"),
@@ -533,6 +559,9 @@ pub fn get_varnish_builtins() -> Definitions {
             ("transport".to_string(), Type::String),
             ("hash".to_string(), Type::Blob),
             ("esi".to_string(), Type::Bool),
+            ("do_gunzip".to_string(), Type::Bool), // varnish enterprise
+            ("max_age".to_string(), Type::Duration),
+            ("filters".to_string(), Type::String),
             ("can_gzip".to_string(), Type::Bool),
             ("hash_ignore_vary".to_string(), Type::Bool),
             ("is_reset".to_string(), Type::Bool), // varnish enterprise
@@ -592,6 +621,9 @@ pub fn get_varnish_builtins() -> Definitions {
             ("retries".to_string(), Type::Number),
             ("hash".to_string(), Type::Blob),
             ("time".to_string(), Type::Time),
+            ("filters".to_string(), Type::String),
+            ("retry_connect".to_string(), Type::Bool),
+            ("task_deadline".to_string(), Type::Duration),
             ("proto".to_string(), Type::String),
             ("backend".to_string(), Type::Backend),
             ("uncacheable".to_string(), Type::Bool),
@@ -718,6 +750,9 @@ pub fn get_varnish_builtins() -> Definitions {
         name: "sess".to_string(),
         properties: BTreeMap::from([
             ("timeout_idle".to_string(), Type::Duration),
+            ("timeout_linger".to_string(), Type::Duration),
+            ("send_timeout".to_string(), Type::Duration),
+            ("idle_send_timeout".to_string(), Type::Duration),
             ("xid".to_string(), Type::String),
         ]),
         ..Obj::default()
@@ -838,6 +873,17 @@ pub fn get_varnish_builtins() -> Definitions {
         ..Func::default()
     });
 
+    // vcl_backend_refresh: the stale object being refreshed, same fields as obj plus is_valid
+    let obj_stale: Type = match obj.clone() {
+        Type::Obj(mut o) => {
+            o.name = "obj_stale".to_string();
+            o.properties
+                .insert("is_valid".to_string(), Type::Bool);
+            Type::Obj(o)
+        }
+        other => other,
+    };
+
     // varnish enterprise: param.<name> reads a varnishd parameter
     let param: Type = Type::Obj(Obj {
         name: "param".to_string(),
@@ -874,6 +920,7 @@ pub fn get_varnish_builtins() -> Definitions {
             ("resp".into(),      Definition::new_builtin("resp".into(),      resp     )),
             ("beresp".into(),    Definition::new_builtin("beresp".into(),    beresp   )),
             ("obj".into(),       Definition::new_builtin("obj".into(),       obj      )),
+            ("obj_stale".into(), Definition::new_builtin("obj_stale".into(), obj_stale)),
             ("sess".into(),      Definition::new_builtin("sess".into(),      sess     )),
             ("client".into(),    Definition::new_builtin("client".into(),    client   )),
             ("server".into(),    Definition::new_builtin("server".into(),    server   )),
