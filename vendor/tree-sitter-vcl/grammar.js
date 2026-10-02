@@ -18,6 +18,7 @@ module.exports = grammar({
     [
       'member',
       'call',
+      'unary',
       'binary_times',
       'binary_plus',
       'binary_relation',
@@ -225,6 +226,7 @@ module.exports = grammar({
         $.parenthesized_expression,
         $.binary_expression,
         $.neg_expr,
+        $.unary_minus,
         $.member_expression,
         $.ident,
       ),
@@ -270,6 +272,8 @@ module.exports = grammar({
         ),
       ),
     neg_expr: $ => prec.left(seq('!', $.expr)),
+    // unary minus, e.g. «-(-200)» or «-std.integer("-200")»
+    unary_minus: $ => prec('unary', seq('-', $.expr)),
 
     // vcc symbol lookup is case insensitive, so «True» and «TRUE» are valid too
     bool: () => choice(/[Tt][Rr][Uu][Ee]/, /[Ff][Aa][Ll][Ss][Ee]/),
@@ -301,13 +305,21 @@ module.exports = grammar({
 
     ident: () => /[a-zA-Z][\w-]*/, // ident must start with a letter
     // optional due to autocomplete
+    // segments may be quoted, e.g. «req.http."Content-Type"»
     nested_ident: () =>
       token(
         seq(
           /[a-zA-Z][\w-]*/,
           token.immediate(
             repeat(
-              seq(token.immediate('.'), optional(token.immediate(/\w[\w-]*/))),
+              seq(
+                token.immediate('.'),
+                optional(
+                  token.immediate(
+                    choice(/\w[\w-]*/, /"[^"\r\n]*"/, /\{"[^"]*"\}/, /"""[^"]*"""/),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
