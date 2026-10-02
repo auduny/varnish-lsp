@@ -1981,8 +1981,10 @@ impl<'a> TextProvider<&'a [u8]> for &'a Document {
 }
 
 impl PartialEq for VmodImport {
+    /// Two imports are the same when they define the same vcl identifier: «import debug;» and
+    /// «import debug as dbg;» are different imports of the same vmod.
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.name == other.name && self.alias == other.alias
     }
 }
 
