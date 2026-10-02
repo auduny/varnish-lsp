@@ -22,12 +22,12 @@ fn default_vmod_paths() -> Vec<PathBuf> {
         "/usr/lib/aarch64-linux-gnu/varnish/vmods/".into(),
         // fedora, centos
         "/usr/lib64/varnish/vmods/".into(),
-        // freebsd, macos homebrew on intel
+        // freebsd
         "/usr/local/lib/varnish/vmods".into(),
         // arch
         "/usr/lib/varnish/vmods".into(),
-        // macos homebrew on apple silicon
-        "/opt/homebrew/lib/varnish/vmods".into(),
+        // no macOS/Homebrew entry: vmod binaries there are Mach-O, which the vmod reader
+        // (ELF only) cannot parse. Use the vcc files from Homebrew instead.
     ]
 }
 

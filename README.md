@@ -129,9 +129,10 @@ Without a config file the defaults are:
 - `vcc_paths`: `$VARNISHLS_VCC_PATHS` (colon separated) if set, otherwise
   `/usr/share/varnish-plus/vcc`, `/usr/share/varnish/vcc`,
   `/usr/local/share/varnish/vcc` and `/opt/homebrew/share/varnish/vcc`
-- `vmod_paths`: the Varnish Enterprise, Debian/Ubuntu, Fedora/RHEL, FreeBSD,
-  Arch and Homebrew vmod directories (see `default_vmod_paths` in
-  `src/config.rs`)
+- `vmod_paths`: the Varnish Enterprise, Debian/Ubuntu, Fedora/RHEL, FreeBSD
+  and Arch vmod directories (see `default_vmod_paths` in `src/config.rs`).
+  No macOS entry: Homebrew vmods are Mach-O binaries, which the vmod reader
+  cannot parse yet; the Homebrew vcc directory covers macOS.
 - `vcl_paths`: `./`, plus for `.vtc` files the `vcl_path` the test sets itself
 
 Allowed levels for linting rules are error, warning, info, and hint. Set to false to disable a rule.
