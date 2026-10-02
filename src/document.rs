@@ -53,8 +53,17 @@ unsafe impl Sync for Include {}
 #[derive(Debug, Clone)]
 pub struct VmodImport {
     pub name: String,
+    /// «import std as foo;»
+    pub alias: Option<String>,
     pub loc: Location,
     pub nested_pos: NestedPos,
+}
+
+impl VmodImport {
+    /// The name the vmod is used by in vcl
+    pub fn ident(&self) -> &str {
+        self.alias.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -307,14 +316,14 @@ impl Document {
             if matches!(node.kind(), "ident_call_expr") {
                 let ident_node = node.child_by_field_name("ident")?;
                 let ident = get_node_text(&self.rope, &ident_node);
-                let parts = ident.split('.').collect::<Vec<&str>>();
+                let parts = split_nested_ident(&ident);
                 let r#type = scope.get_type_property_by_nested_idents(parts);
                 if r#type.is_some() {
                     return r#type.cloned();
                 }
             } else if matches!(node.kind(), "nested_ident" | "ident") {
                 let ident = get_node_text(&self.rope, &node);
-                let parts = ident.split('.').collect::<Vec<&str>>();
+                let parts = split_nested_ident(&ident);
                 let r#type = scope.get_type_property_by_nested_idents(parts);
                 if r#type.is_some() {
                     return r#type.cloned();
@@ -335,11 +344,11 @@ impl Document {
             .ast
             .root_node()
             .descendant_for_point_range(point, point)?;
-        let name = get_node_text(&self.rope, &node)
-            .split('.')
-            .take(1)
-            .next()
-            .unwrap()
+        let text = get_node_text(&self.rope, &node);
+        let name = split_nested_ident(&text)
+            .first()
+            .copied()
+            .unwrap_or_default()
             .to_string();
         Some(name)
     }
@@ -550,7 +559,7 @@ impl Document {
 
                     let left_ident_text = get_node_text(&self.rope, &left_node);
 
-                    let left_parts = left_ident_text.split('.').collect::<Vec<_>>();
+                    let left_parts = split_nested_ident(&left_ident_text);
                     let first_left_part = left_parts[0].to_lowercase();
                     if ["req", "bereq", "resp", "beresp", "obj"].contains(&first_left_part.as_str())
                     {
@@ -747,6 +756,10 @@ impl Document {
                         add_error!("Missing identifier");
                         continue;
                     };
+                    // «call obj.method();»: a vmod function returning a SUB, checked as a call
+                    if ident_node.kind() == "ident_call_expr" {
+                        continue;
+                    }
                     let ident = get_node_text(&self.rope, &ident_node);
                     let Some(definition) = global_scope.get(ident.as_str()) else {
                         add_error!("Undefined subroutine");
@@ -778,11 +791,15 @@ impl Document {
                 }
                 // lint ident_call_expr (e.g. brotli.init(BOTH, br_q = 1))
                 "ident_call_expr" => {
+                    // «(expr).lower()»: the receiver is an expression, nothing to look up
+                    if node.parent().is_some_and(|p| p.kind() == "member_expression") {
+                        continue;
+                    }
                     let Some(ident_node) = node.child_by_field_name("ident") else {
                         continue;
                     };
                     let full_ident = get_node_text(&self.rope, &ident_node);
-                    let ident_parts = full_ident.split('.').collect::<Vec<_>>();
+                    let ident_parts = split_nested_ident(&full_ident);
                     // check first part exists (e.g. «brotli»)
                     let Some(definition) = global_scope.get(ident_parts[0]) else {
                         add_error!(node: ident_node, "{} is undefined", ident_parts[0]);
@@ -925,7 +942,7 @@ impl Document {
                                 let Some(arg_value_type) =
                                     node_to_type(&arg_value_node).or_else(|| {
                                         let ident = get_node_text(&self.rope, &arg_value_node);
-                                        let ident_parts = ident.split('.').collect::<Vec<_>>();
+                                        let ident_parts = split_nested_ident(&ident);
                                         global_scope
                                             .get_type_property_by_nested_idents(ident_parts.clone())
                                             .cloned()
@@ -989,7 +1006,7 @@ impl Document {
                     if toplev_node.kind() == "sub_declaration" {
                         if let Some(ident_node) = toplev_node.child_by_field_name("ident") {
                             let sub_name = &*get_node_text(&self.rope, &ident_node);
-                            let parts = text.split('.').collect::<Vec<&str>>();
+                            let parts = split_nested_ident(&text);
                             if builtin_sub_context(sub_name).is_some() {
                                 let exists_in_sub = match parts[0] {
                                     "req" | "req_top" => matches!(
@@ -1009,13 +1026,17 @@ impl Document {
                                         sub_name,
                                         "vcl_backend_fetch"
                                             | "vcl_backend_response"
+                                            | "vcl_backend_refresh"
                                             | "vcl_pipe"
                                             | "vcl_backend_error"
                                     ),
                                     "beresp" => matches!(
                                         sub_name,
-                                        "vcl_backend_response" | "vcl_backend_error"
+                                        "vcl_backend_response"
+                                            | "vcl_backend_refresh"
+                                            | "vcl_backend_error"
                                     ),
+                                    "obj_stale" => sub_name == "vcl_backend_refresh",
                                     "resp" => {
                                         matches!(sub_name, "vcl_deliver" | "vcl_miss" | "vcl_synth")
                                     }
@@ -1039,7 +1060,7 @@ impl Document {
                             )
                         }) {
                             let ident = get_node_text(&self.rope, &node);
-                            let ident_parts = ident.split('.').collect::<Vec<_>>();
+                            let ident_parts = split_nested_ident(&ident);
                             if global_scope
                                 .get_type_property_by_nested_idents(ident_parts.clone())
                                 .is_none()
@@ -1223,13 +1244,23 @@ impl Document {
     }
 
     pub fn get_vmod_imports(&self) -> Vec<VmodImport> {
-        let q = Query::new(&self.ast.language(), "(import_declaration (ident) @ident)").unwrap();
+        let q = Query::new(
+            &self.ast.language(),
+            "(import_declaration ident: (ident) @ident alias: (ident)? @alias)",
+        )
+        .unwrap();
         let mut qc = QueryCursor::new();
         let mut all_matches = qc.matches(&q, self.ast.root_node(), self);
         let capt_idx = q.capture_index_for_name("ident").unwrap();
+        let alias_idx = q.capture_index_for_name("alias").unwrap();
 
         let mut imports = Vec::new();
         while let Some(each_match) = all_matches.next() {
+            let alias = each_match
+                .captures
+                .iter()
+                .find(|c| c.index == alias_idx)
+                .map(|c| get_node_text(&self.rope, &c.node));
             for capture in each_match.captures.iter().filter(|c| c.index == capt_idx) {
                 let ts_range = capture.node.range();
                 let name = get_node_text(&self.rope, &capture.node).to_string();
@@ -1238,6 +1269,7 @@ impl Document {
                 nested_pos.push(point_to_tuple(ts_range.start_point));
                 imports.push(VmodImport {
                     name,
+                    alias: alias.clone(),
                     loc: Location {
                         uri: self.url.to_owned(),
                         range,
@@ -1362,7 +1394,7 @@ impl Document {
                         .unwrap();
                     let def_text = get_node_text(&self.rope, &def_ident_capture.node);
                     let Some(r#type) = scope_with_vmods
-                        .get_type_property_by_nested_idents(def_text.split('.').collect())
+                        .get_type_property_by_nested_idents(split_nested_ident(&def_text))
                     else {
                         continue;
                     };
@@ -1567,7 +1599,7 @@ impl Document {
                             if let Some(ctx_node) = parent_node.child_by_field_name("left") {
                                 let ctx_node_str = get_node_text(&self.rope, &ctx_node);
                                 let left_type = global_scope.get_type_property_by_nested_idents(
-                                    ctx_node_str.split('.').collect(),
+                                    split_nested_ident(&ctx_node_str),
                                 );
 
                                 if let Some(Type::Obj(obj)) = left_type {
@@ -1643,7 +1675,7 @@ impl Document {
                     let func_ident =
                         get_node_text(&self.rope, &func_node.child_by_field_name("ident").unwrap());
                     if let Some(Type::Func(func)) = global_scope
-                        .get_type_property_by_nested_idents(func_ident.split('.').collect())
+                        .get_type_property_by_nested_idents(split_nested_ident(&func_ident))
                     {
                         // Add to suggestions
                         keyword_suggestions = func
@@ -1682,7 +1714,7 @@ impl Document {
                             &func_node.child_by_field_name("ident").unwrap(),
                         );
                         if let Some(Type::Func(func)) = global_scope
-                            .get_type_property_by_nested_idents(func_ident.split('.').collect())
+                            .get_type_property_by_nested_idents(split_nested_ident(&func_ident))
                             && let Some(arg) = func
                                 .args
                                 .iter()
@@ -1752,7 +1784,7 @@ impl Document {
         debug!("text: «{text}»");
 
         // identifiers written so far (split by dot)
-        let idents: Vec<&str> = text.split('.').collect();
+        let idents: Vec<&str> = split_nested_ident(&text);
 
         let mut suggestions = global_scope
             .get_type_properties_by_idents(
@@ -2012,10 +2044,52 @@ pub fn node_to_type(node: &Node) -> Option<Type> {
         "duration" => Some(Type::Duration),
         "bytes" => Some(Type::Bytes),
         "bool" => Some(Type::Bool),
+        "blob" => Some(Type::Blob),
         "inline_probe" => Some(Type::Probe),
         "literal" => node_to_type(&node.child(0)?),
         _ => None,
     }
+}
+
+/// Split «a.b.c» on the dots, but not inside quoted header names such as «req.http."a.b"»,
+/// «req.http.{"a.b"}» or «req.http."""a.b"""».
+pub fn split_nested_ident(ident: &str) -> Vec<&str> {
+    let mut parts = vec![];
+    let mut start = 0;
+    let mut quote: Option<&str> = None;
+    let mut i = 0;
+    while i < ident.len() {
+        let rest = &ident[i..];
+        if let Some(q) = quote {
+            if rest.starts_with(q) {
+                i += q.len();
+                quote = None;
+            } else {
+                i += rest.chars().next().map_or(1, char::len_utf8);
+            }
+            continue;
+        }
+        for q in ["\"\"\"", "{\"", "\""] {
+            if rest.starts_with(q) {
+                quote = Some(match q {
+                    "{\"" => "\"}",
+                    other => other,
+                });
+                break;
+            }
+        }
+        if let Some(q) = quote {
+            i += if q == "\"}" { 2 } else { q.len() };
+            continue;
+        }
+        if rest.starts_with('.') {
+            parts.push(&ident[start..i]);
+            start = i + 1;
+        }
+        i += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    parts.push(&ident[start..]);
+    parts
 }
 
 fn point_to_tuple(point: Point) -> (usize, usize) {

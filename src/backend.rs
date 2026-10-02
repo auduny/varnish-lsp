@@ -1061,13 +1061,16 @@ async fn read_all_vmods(imports: Vec<VmodImport>, config: &Config) -> Definition
      * TODO: maybe read all vcc files at startup, cache them, and then lookup from here.
      * TODO: support pointing to singular vcc file or vmod src dir containing a vcc file
      */
-    let vcc_files: Vec<PathBuf> = imports
+    // one vcc file per vmod, even if it is imported twice («import std; import std as foo;»)
+    let mut vmod_names: Vec<&str> = imports.iter().map(|import| import.name.as_str()).collect();
+    vmod_names.dedup();
+    let vcc_files: Vec<PathBuf> = vmod_names
         .iter()
-        .flat_map(|import| {
+        .flat_map(|vmod_name| {
             config
                 .vcc_paths
                 .iter()
-                .find_map(|vcc_path| find_vcc_file(vcc_path, &import.name))
+                .find_map(|vcc_path| find_vcc_file(vcc_path, vmod_name))
         })
         .collect();
 
@@ -1093,23 +1096,27 @@ async fn read_all_vmods(imports: Vec<VmodImport>, config: &Config) -> Definition
             Type::Obj(ref obj) => obj.name.clone(),
             _ => unreachable!(),
         };
-        let Some(import) = imports.iter().find(|import| import.name == vmod_name) else {
-            error!("Failed to find {vmod_name}. Vmod aliases not yet supported.");
-            continue;
-        };
-        let def = Definition {
-            ident_str: vmod_name.clone(),
-            r#type: Box::new(vmod_scope),
-            loc: Some(import.loc.clone()),
-            nested_pos: import.nested_pos.clone(),
-        };
-        definitions.properties.insert(vmod_name, def);
+        // one definition per import of this vmod: «import std;» and «import std as foo;»
+        let mut found = false;
+        for import in imports.iter().filter(|import| import.name == vmod_name) {
+            found = true;
+            let ident = import.ident().to_string();
+            definitions.properties.entry(ident.clone()).or_insert(Definition {
+                ident_str: ident,
+                r#type: Box::new(vmod_scope.clone()),
+                loc: Some(import.loc.clone()),
+                nested_pos: import.nested_pos.clone(),
+            });
+        }
+        if !found {
+            error!("Failed to find {vmod_name}");
+        }
     }
 
     // read all vmods
     let vmod_futures = imports
         .iter()
-        .filter(|import| !definitions.properties.contains_key(&import.name)) // filter out vmods found by vcc
+        .filter(|import| !definitions.properties.contains_key(import.ident())) // filter out vmods found by vcc
         .map(|import| {
             // debug!("spawning task to vmod binary for «{vmod_name}»");
             tokio::task::spawn(read_vmod_lib_by_name(
@@ -1123,19 +1130,16 @@ async fn read_all_vmods(imports: Vec<VmodImport>, config: &Config) -> Definition
         match vmod_fut.await {
             Ok(Ok(Some(vmod))) => {
                 let vmod_name = vmod.name;
-                let Some(import) = imports.iter().find(|import| import.name == vmod_name) else {
-                    error!("Failed to find {vmod_name}. Vmod aliases not yet supported.");
-                    continue;
-                };
-                definitions.properties.insert(
-                    import.name.clone(),
-                    Definition {
-                        ident_str: import.name.clone(),
-                        r#type: Box::new(vmod.scope),
-                        loc: Some(import.loc.clone()),
-                        nested_pos: import.nested_pos.clone(),
-                    },
-                );
+                for import in imports.iter().filter(|import| import.name == vmod_name) {
+                    definitions.properties.entry(import.ident().to_string()).or_insert(
+                        Definition {
+                            ident_str: import.ident().to_string(),
+                            r#type: Box::new(vmod.scope.clone()),
+                            loc: Some(import.loc.clone()),
+                            nested_pos: import.nested_pos.clone(),
+                        },
+                    );
+                }
             }
             Ok(Ok(None)) => {
                 error!("Vmod not found");
