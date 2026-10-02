@@ -307,6 +307,8 @@ pub fn parse_vcc(vcc_file: String) -> Type {
         read_only: true,
         ..Default::default()
     };
+    // «$Alias .bar obj.foo» / «$Alias newname oldname», applied once everything is parsed
+    let mut aliases: Vec<(String, String)> = vec![];
 
     // for each part, split by double newline (statements can span multiple lines)
     while let Some(s) = parts.next() {
@@ -321,6 +323,11 @@ pub fn parse_vcc(vcc_file: String) -> Type {
             }
             "ABI" => {}
             "Restrict" => {}
+            "Alias" => {
+                if let (Some(alias), Some(target)) = (toks.next(), toks.next()) {
+                    aliases.push((alias.to_string(), target.to_string()));
+                }
+            }
             "Function" => {
                 let Some(mut func) = parse_func(&mut toks, &mut lines_iter) else {
                     continue;
@@ -392,6 +399,26 @@ pub fn parse_vcc(vcc_file: String) -> Type {
         }
     }
 
+    for (alias, target) in aliases {
+        if let Some(method) = alias.strip_prefix('.') {
+            // method alias: «$Alias .bar obj.foo»
+            let Some((obj_name, target_method)) = target.split_once('.') else {
+                continue;
+            };
+            let Some(Type::Func(obj_func)) = scope.properties.get_mut(obj_name) else {
+                continue;
+            };
+            let Some(Type::Obj(obj)) = obj_func.r#return.as_deref_mut() else {
+                continue;
+            };
+            if let Some(func) = obj.properties.get(target_method).cloned() {
+                obj.properties.insert(method.to_string(), func);
+            }
+        } else if let Some(func) = scope.properties.get(&target).cloned() {
+            scope.properties.insert(alias, func);
+        }
+    }
+
     Type::Obj(scope)
 }
 
@@ -442,6 +469,22 @@ mod tests {
             panic!("expected object return type");
         };
         assert!(obj.properties.contains_key("increment"));
+    }
+
+    #[test]
+    fn test_parse_alias() {
+        let src = "$Module debug 3 \"Debug\"\n\n$Function STRING foo()\n\nDoc.\n\n$Object obj(STRING s)\n\nDoc.\n\n$Method STRING .foo(STRING why)\n\nDoc.\n\n$Alias bar foo\n\nDoc.\n\n$Alias .bar obj.foo\n\nDoc.\n";
+        let Type::Obj(scope) = parse_vcc(src.to_string()) else {
+            panic!("expected object scope");
+        };
+        assert!(matches!(scope.properties.get("bar"), Some(Type::Func(_))));
+        let Some(Type::Func(obj_func)) = scope.properties.get("obj") else {
+            panic!("obj missing");
+        };
+        let Some(Type::Obj(obj)) = obj_func.r#return.as_deref() else {
+            panic!("expected object");
+        };
+        assert!(matches!(obj.properties.get("bar"), Some(Type::Func(_))));
     }
 
     #[test]

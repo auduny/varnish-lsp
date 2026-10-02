@@ -130,7 +130,7 @@ trunk checkout, config `vcc_paths = ["./vmod"]`.
 | | Before | After |
 |---|---|---|
 | Files with unexpected errors | 33 | 6 |
-| Unexpected errors | 142 | 29 |
+| Unexpected errors | 142 | 28 |
 
 Fixed: quoted header names (`req.http."a.b"`, `{"..."}`, `"""..."""`),
 unary minus, trunk variables (`req.max_age`, `*.filters`,
@@ -142,8 +142,8 @@ and BLOB literals as backend property values.
 
 The 29 remaining: 24 in `blob_b00011.vtc`, which includes a VCL file it
 first writes to `${tmpdir}`, so the include cannot be resolved statically;
-4 syntax errors in negative tests written outside `-errvcl`; and 1
-`objx.bar is not a method` in a test that expects that failure.
+and 4 syntax errors in negative tests written outside `-errvcl`.
+(`objx.bar`, defined with `$Alias .bar obj.foo`, is now supported too.)
 
 Enterprise suite after these changes: 7 files, 10 errors (4 negative-test
 syntax errors, 2 genuine restriction errors, 2 `math` which has no vcc in
