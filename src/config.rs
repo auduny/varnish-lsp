@@ -14,17 +14,20 @@ fn default_vcl_paths() -> Vec<PathBuf> {
 
 fn default_vmod_paths() -> Vec<PathBuf> {
     vec![
+        // varnish enterprise: debian/ubuntu, then rhel/fedora
+        "/usr/lib/varnish-plus/vmods".into(),
+        "/usr/lib64/varnish-plus/vmods".into(),
         // ubuntu, debian
         "/usr/lib/x86_64-linux-gnu/varnish/vmods/".into(),
-        "/usr/lib/varnish-plus/vmods".into(),
+        "/usr/lib/aarch64-linux-gnu/varnish/vmods/".into(),
         // fedora, centos
         "/usr/lib64/varnish/vmods/".into(),
-        // freebsd
+        // freebsd, macos homebrew on intel
         "/usr/local/lib/varnish/vmods".into(),
         // arch
         "/usr/lib/varnish/vmods".into(),
-        // macos homebrew
-        "/opt/homebrew/usr/lib/varnish/vmods".into(),
+        // macos homebrew on apple silicon
+        "/opt/homebrew/lib/varnish/vmods".into(),
     ]
 }
 
@@ -38,9 +41,13 @@ fn default_vcc_paths() -> Vec<PathBuf> {
     }
 
     vec![
-        // fedora
+        // varnish enterprise (vccdir = $(datarootdir)/varnish-plus/vcc)
+        "/usr/share/varnish-plus/vcc".into(),
+        // varnish cache on linux
         "/usr/share/varnish/vcc".into(),
-        // macos homebrew
+        // freebsd, macos homebrew on intel
+        "/usr/local/share/varnish/vcc".into(),
+        // macos homebrew on apple silicon
         "/opt/homebrew/share/varnish/vcc".into(),
     ]
 }
