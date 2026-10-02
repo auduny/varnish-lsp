@@ -222,9 +222,10 @@ fn parse_func_args<'a>(toks: &mut Peekable<impl Iterator<Item = &'a str>>) -> Ve
         // PRIV_* arguments are provided by varnish, not by the vcl caller
         let is_priv = arg_toks.peek().is_some_and(|tok| tok.starts_with("PRIV_"));
         let r#type = parse_type(&mut arg_toks);
+        // «name:cname» gives the C name after the colon (e.g. «BOOL bool:boolean»)
         let name = arg_toks
             .next_if(|tok| *tok != ",")
-            .map(|tok| tok.to_string());
+            .map(|tok| tok.split(':').next().unwrap_or(tok).to_string());
 
         let default_value: Option<String> = arg_toks
             .next_if(|tok| *tok == "=")
