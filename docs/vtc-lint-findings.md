@@ -121,3 +121,31 @@ the categorization.
 6. Per-`-vcl`-block scoping (253 errors, larger change).
 7. Suppress diagnostics inside `-errvcl`.
 8. Custom `vcl_*` subs and `vcl_connect`.
+
+## Open source varnish-cache (trunk, 945 files)
+
+Same method on `bin/varnishtest/tests` and `vmod/tests` of a varnish-cache
+trunk checkout, config `vcc_paths = ["./vmod"]`.
+
+| | Before | After |
+|---|---|---|
+| Files with unexpected errors | 33 | 6 |
+| Unexpected errors | 142 | 29 |
+
+Fixed: quoted header names (`req.http."a.b"`, `{"..."}`, `"""..."""`),
+unary minus, trunk variables (`req.max_age`, `*.filters`,
+`bereq.retry_connect`, `bereq.task_deadline`, `sess.*_timeout*`), `obj_stale`
+in `vcl_backend_refresh`, `STRING.lower()/upper()` and `BACKEND.resolve()`,
+`import x as y` (also when the same vmod is imported plainly too),
+`call vmod.function();`, vcc argument names with a C name (`bool:boolean`),
+and BLOB literals as backend property values.
+
+The 29 remaining: 24 in `blob_b00011.vtc`, which includes a VCL file it
+first writes to `${tmpdir}`, so the include cannot be resolved statically;
+4 syntax errors in negative tests written outside `-errvcl`; and 1
+`objx.bar is not a method` in a test that expects that failure.
+
+Enterprise suite after these changes: 7 files, 10 errors (4 negative-test
+syntax errors, 2 genuine restriction errors, 2 `math` which has no vcc in
+the repo, 2 `Not found` in a test that only now parses and uses an
+enterprise variable, since added).
