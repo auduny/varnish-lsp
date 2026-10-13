@@ -1995,11 +1995,9 @@ impl Include {
         if self.url.is_none() {
             self.url = vcl_paths.iter().find_map(|search_path| {
                 let path = search_path.join(&self.path);
-                if path.exists() {
-                    Url::from_file_path(path).ok()
-                } else {
-                    None
-                }
+                // vcl_paths may be relative (the default is «./»); a file URL must be absolute
+                let path = std::fs::canonicalize(&path).ok()?;
+                Url::from_file_path(path).ok()
             });
         }
         self
