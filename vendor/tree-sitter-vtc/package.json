@@ -12,6 +12,6 @@
   "devDependencies": {
     "nan": "^2.22.0",
     "node-addon-api": "^8.4.0",
-    "tree-sitter-cli": "^0.25"
+    "tree-sitter-cli": "^0.25.10"
   }
 }
