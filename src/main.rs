@@ -348,7 +348,7 @@ async fn main() -> ExitCode {
                 };
 
                 let Ok(formatted) = formatter::format(src, &config.formatter).inspect_err(|err| {
-                    eprintln!("Failed to format {}: {err}", &path.to_string_lossy());
+                    eprintln!("Failed to format {}: {err}", path.to_string_lossy());
                     exit_code = ExitCode::FAILURE;
                 }) else {
                     continue;
