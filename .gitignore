@@ -4,3 +4,4 @@
 *.wasm
 *.so
 varnishls.log
+/editors/zed/target

@@ -1,0 +1,11 @@
+id = "varnish"
+name = "Varnish"
+description = "Varnish Configuration Language (VCL) support for Zed, powered by varnishls"
+version = "0.0.1"
+schema_version = 1
+authors = ["Audun Ytterdal"]
+repository = "https://github.com/auduny/varnish-lsp"
+
+[language_servers.varnishls]
+name = "Varnish Language Server"
+languages = ["VCL", "VTC"]

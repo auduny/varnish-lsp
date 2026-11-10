@@ -1,0 +1,8 @@
+name = "VTC"
+path_suffixes = ["vtc"]
+line_comments = ["# "]
+tab_size = 4
+hard_tabs = false
+
+[[language_servers]]
+name = "varnishls"
